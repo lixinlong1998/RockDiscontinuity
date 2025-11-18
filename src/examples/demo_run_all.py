@@ -1,8 +1,8 @@
-from rock_discon_extract.geometry import Point
-from rock_discon_extract.pointcloud import PointCloud
-from rock_discon_extract.algorithms.ransac import RansacDetector
-from rock_discon_extract.algorithms.region_growing import RegionGrowingDetector
-from rock_discon_extract.pipeline import RockDiscontinuityPipeline
+from ..rock_discon_extract.geometry import Point
+from ..rock_discon_extract.pointcloud import PointCloud
+from ..rock_discon_extract.algorithms.ransac import RansacDetector
+from ..rock_discon_extract.algorithms.region_growing import RegionGrowingDetector
+from ..rock_discon_extract.pipeline import RockDiscontinuityPipeline
 
 
 def main():

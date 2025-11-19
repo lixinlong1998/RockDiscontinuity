@@ -1,0 +1,38 @@
+[build-system]
+# 使用 setuptools 作为构建后端
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rock-discon-extract"              # 将来 pip install 时的包名
+version = "0.1.0"
+description = "Rock mass discontinuity detection framework (RANSAC/RG/RHT/etc.)"
+readme = "README.md"
+requires-python = ">=3.8"
+
+authors = [
+    { name = "Xinlong Li" }
+]
+
+license = { file = "LICENSE" }
+
+# 运行时依赖
+dependencies = [
+    "numpy>=1.20"
+]
+
+# 可选: 开发环境依赖
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "mypy"
+]
+
+# 告诉 setuptools: 源码在 src 目录下
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+# 自动在 src 下面找包(只要有 __init__.py 就会被当作包)
+[tool.setuptools.packages.find]
+where = ["src"]

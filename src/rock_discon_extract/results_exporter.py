@@ -1,12 +1,10 @@
 import csv
 import os
 from typing import Dict, List, Optional, Tuple
-
 import numpy as np
 from scipy.spatial import ConvexHull
 from plyfile import PlyData, PlyElement
 from datetime import datetime
-
 from .logging_utils import LoggerManager, Timer
 from .geometry import Discontinuity, Plane
 from .pointcloud import PointCloud
@@ -19,7 +17,7 @@ class ResultsExporter:
         包括:
             1) 点级 CSV (每行一个点, 含平面/结构面信息)
             2) 结构面级 CSV (每行一个 Discontinuity)
-            3) 每个结构面的凸包多边形 PLY 文件(便于 Meshlab 可视化)
+            3) 每个结构面的凸包多边形 PLY 文件(便于 Meshlab 可视化, 当前实现为 vertex+edge)
 
     实现思路(概要):
         - 在构造函数中保存 point_cloud 与 discontinuities, 以及可选的 cluster_labels。
@@ -29,12 +27,12 @@ class ResultsExporter:
         - 结构面级 CSV:
             对每个 Discontinuity:
                 * 汇总该结构面所有点索引(去重)
-                * 基于代表平面(第一个 Segment 的 plane) 和凸包计算面积(2D 投影后多边形面积)
+                * 基于代表平面(第一个 Segment 的 plane) 和结构面自身的凸包计算面积
                 * 汇总 PointsNumber / TraceLength / Roughness / MeanRMS 等指标
         - 凸包 PLY:
             对每个 Discontinuity:
-                * 计算结构面所有点在平面局部坐标系上的 2D 坐标, 做 ConvexHull
-                * 将凸包顶点按顺序写为 PLY 的 vertex, 并写一个 face 多边形元素。
+                * 使用 Discontinuity 中预计算好的 polygon_points (凸包边界点)
+                * 将边界点按顺序连成 edge, 以 PLY 的 vertex+edge 形式导出
 
     输入:
         point_cloud: PointCloud
@@ -284,35 +282,31 @@ class ResultsExporter:
                     if not disc.segments:
                         continue
 
-                    # Discontinuity 级 cluster_id
                     disc_cluster_id = getattr(disc, "cluster_id", -1)
 
                     # 代表平面: 取第一个 segment 的 plane
-                    plane_ref: Plane = disc.segments[0].plane
+                    plane_ref = disc.segments[0].plane
                     A, B, C = plane_ref.normal
                     D = plane_ref.d
 
-                    # 汇总点索引并去重
-                    all_indices: List[int] = []
-                    for seg in disc.segments:
-                        all_indices.extend(seg.point_indices)
-                    if not all_indices:
-                        continue
-                    indices_all_unique = np.unique(np.array(all_indices, dtype=int))
-                    points_number = int(indices_all_unique.shape[0])
+                    # 点数: 使用 Discontinuity.point_indices
+                    if getattr(disc, "point_indices", None):
+                        points_number = len(set(disc.point_indices))
+                    else:
+                        points_number = 0
 
-                    # 统计 TraceLength (简单求和)
+                    # TraceLength: 所有 segment.trace_length 之和
                     trace_length = float(sum(seg.trace_length for seg in disc.segments))
 
                     # MeanRMS: 各 segment 所属平面 rmse 的平均值
                     rms_list = [seg.plane.rmse for seg in disc.segments]
                     mean_rms = float(np.mean(rms_list)) if rms_list else float("nan")
 
-                    # 结构面 Roughness: 使用 Discontinuity.roughness
                     roughness = disc.roughness
 
-                    # 面积 Area: 基于凸包的投影面积
-                    area = self._ComputeAreaOnPlane(indices_all_unique, plane_ref)
+                    # 面积: 通过 Discontinuity 自身的方法计算
+                    disc.ComputePolygonAndArea(self.point_cloud, plane_ref)
+                    area = float(getattr(disc, "area", 0.0))
 
                     writer.writerow([
                         disc_id,
@@ -337,98 +331,169 @@ class ResultsExporter:
     # =========================
 
     def ExportDiscontinuityPolygonsToPly(
-            self,
-            ply_path: str
+        self,
+        ply_path: str
     ) -> None:
         """
         功能简介:
             将所有 Discontinuity 的凸包边界点导出到一个 PLY 文件,
-            文件名形如: <basename>_polygons.ply。
+            每个结构面的边界以点+edge 的形式表示, 便于在 MeshLab 中查看多边形边界。
 
         实现思路:
             对每个 Discontinuity:
-                1) 汇总并去重所有点索引 indices_all_unique;
-                2) 若点数 < 3, 无法形成凸包, 跳过;
-                3) 使用代表平面 plane_ref (第一个 segment 的 plane);
-                4) 调用 _ComputeConvexHull3D 计算凸包边界点的 3D 坐标
-                   和对应的全局点索引;
-                5) 对每个边界点, 取出:
-                   - x, y, z
-                   - r, g, b
-                   - discontinuity_id
-                6) 汇总所有结构面的边界点, 构造成一个 vertex 数组,
-                   使用 PlyElement.describe 写为包含 vertex 的 PLY 文件。
-
-        注意:
-            - 此处仅输出 vertex, 不写 face(多边形), 方便在 Meshlab 中以点的形式
-              查看每个结构面的边界, 后续可根据 discontinuity_id 做过滤或着色。
+                1) 调用 disc.ComputePolygonAndArea(self.point_cloud) 保证 polygon_points 可用;
+                2) 从 disc.polygon_points 追加到全局顶点列表;
+                3) 若有 disc.polygon_point_indices, 则从原点云取颜色; 否则统一用白色;
+                4) 为该结构面顶点构造一圈 edges, 按顺序连接并首尾相连;
+            最后调用 _ExportToMeshlabPly:
+                - vertices: 所有结构面的边界点
+                - edges: 所有结构面的边界边
+                - colors: 对应的顶点颜色
         """
         ply_path = os.path.abspath(ply_path)
         os.makedirs(os.path.dirname(ply_path), exist_ok=True)
 
         with Timer(f"ExportDiscontinuityPolygonsToPly({os.path.basename(ply_path)})", self.logger):
-            vertex_records = []
+            vertices_list = []
+            colors_list = []
+            edges_list = []
+            offset = 0  # 全局顶点索引偏移量
 
             for disc_id, disc in enumerate(self.discontinuities):
                 if not disc.segments:
                     continue
 
-                # 汇总点索引并去重
-                all_indices: List[int] = []
-                for seg in disc.segments:
-                    all_indices.extend(seg.point_indices)
-                if not all_indices:
-                    continue
-                indices_all_unique = np.unique(np.array(all_indices, dtype=int))
-                if indices_all_unique.shape[0] < 3:
+                # 确保 polygon_points 已计算
+                disc.ComputePolygonAndArea(self.point_cloud)
+                pts = getattr(disc, "polygon_points", None)
+                if pts is None or pts.shape[0] < 2:
                     continue
 
-                # 代表平面
-                plane_ref: Plane = disc.segments[0].plane
+                pts = np.asarray(pts, dtype=np.float32)
+                m = pts.shape[0]
+                vertices_list.append(pts)
 
-                # 计算 3D 凸包边界点
-                boundary_points_3d, boundary_point_ids = self._ComputeConvexHull3D(
-                    indices_all_unique,
-                    plane_ref
-                )
-                if boundary_points_3d.shape[0] < 3:
-                    continue
+                # 颜色: 若 polygon_point_indices 与 pts 对应, 则从原点云读取颜色, 否则统一用白色
+                colors_disc = []
+                poly_indices = getattr(disc, "polygon_point_indices", None)
+                if poly_indices is not None and len(poly_indices) == m:
+                    for idx in poly_indices:
+                        p = self.point_cloud.points[int(idx)]
+                        colors_disc.append([
+                            int(max(0, min(255, p.r))),
+                            int(max(0, min(255, p.g))),
+                            int(max(0, min(255, p.b))),
+                        ])
+                else:
+                    colors_disc = [[255, 255, 255]] * m
+                colors_list.append(np.asarray(colors_disc, dtype=np.uint8))
 
-                # 为每个边界点构造一条记录
-                for i, pt_idx in enumerate(boundary_point_ids):
-                    p = self.point_cloud.points[int(pt_idx)]
-                    vertex_records.append((
-                        float(p.x),
-                        float(p.y),
-                        float(p.z),
-                        int(max(0, min(255, p.r))),
-                        int(max(0, min(255, p.g))),
-                        int(max(0, min(255, p.b))),
-                        int(disc_id),
-                    ))
+                # 构造边: (offset+i, offset+i+1), 首尾相连
+                edges_disc = []
+                if m >= 2:
+                    for i in range(m - 1):
+                        edges_disc.append([offset + i, offset + i + 1])
+                    if m > 2:
+                        edges_disc.append([offset + m - 1, offset])  # 闭合
+                if edges_disc:
+                    edges_list.append(np.asarray(edges_disc, dtype=np.int32))
 
-            if not vertex_records:
+                offset += m
+
+            if not vertices_list:
                 self.logger.warning("没有可导出的凸包边界点, 跳过写 PLY。")
                 return
 
-            vertex_dtype = np.dtype([
-                ("x", "f4"),
-                ("y", "f4"),
-                ("z", "f4"),
-                ("red", "u1"),
-                ("green", "u1"),
-                ("blue", "u1"),
-                ("discontinuity_id", "i4"),
-            ])
-            vertex_array = np.array(vertex_records, dtype=vertex_dtype)
+            vertices = np.vstack(vertices_list)
+            colors = np.vstack(colors_list)
+            edges = np.vstack(edges_list) if edges_list else None
 
-            el_verts = PlyElement.describe(vertex_array, "vertex")
-            PlyData([el_verts], text=False).write(ply_path)
+            self._ExportToMeshlabPly(
+                filename=ply_path,
+                vertices=vertices,
+                edges=edges,
+                faces=None,
+                colors=colors
+            )
 
             self.logger.info(
                 f"结构面凸包边界 PLY 导出完成: {ply_path}, "
-                f"共 {vertex_array.shape[0]} 个边界点."
+                f"共 {vertices.shape[0]} 个边界点, "
+                f"{edges.shape[0] if edges is not None else 0} 条边."
             )
+
+    @staticmethod
+    def _ExportToMeshlabPly(filename, vertices=None, edges=None, faces=None, colors=None):
+        """
+        导出点、线、面到 PLY 文件，支持 MeshLab 可视化
+
+        参数:
+            filename: str
+                输出文件名（如 "output.ply"）
+            vertices: np.ndarray
+                顶点数组，shape=(N, 3)，每行是 [x, y, z]
+            edges: np.ndarray 或 None
+                边数组，shape=(M, 2)，每行是 [vertex_idx1, vertex_idx2]
+            faces: np.ndarray 或 None
+                面数组，shape=(K, 3)，每行是 [vertex_idx1, vertex_idx2, vertex_idx3]
+            colors: np.ndarray 或 None
+                顶点颜色，shape=(N, 3)，每行是 [r, g, b]（0-255）
+        """
+        if vertices is None:
+            raise ValueError("顶点数据不能为空！")
+
+        vertices = np.asarray(vertices, dtype=np.float32)
+        has_edges = edges is not None
+        has_faces = faces is not None
+        has_colors = colors is not None
+
+        if has_edges:
+            edges = np.asarray(edges, dtype=np.int32)
+        if has_faces:
+            faces = np.asarray(faces, dtype=np.int32)
+        if has_colors:
+            colors = np.asarray(colors, dtype=np.uint8)
+            if colors.shape[0] != vertices.shape[0]:
+                raise ValueError("colors 行数必须与 vertices 相同！")
+
+        with open(filename, "w", encoding="utf-8") as f:
+            # 写入 PLY 头部
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(vertices)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            if has_colors:
+                f.write("property uchar red\n")
+                f.write("property uchar green\n")
+                f.write("property uchar blue\n")
+            if has_edges:
+                f.write(f"element edge {len(edges)}\n")
+                f.write("property int vertex1\n")
+                f.write("property int vertex2\n")
+            if has_faces:
+                f.write(f"element face {len(faces)}\n")
+                f.write("property list uchar int vertex_indices\n")
+            f.write("end_header\n")
+
+            # 写入顶点数据（+颜色）
+            for i, v in enumerate(vertices):
+                line = f"{v[0]} {v[1]} {v[2]}"
+                if has_colors:
+                    c = colors[i]
+                    line += f" {int(c[0])} {int(c[1])} {int(c[2])}"
+                f.write(line + "\n")
+
+            # 写入边数据
+            if has_edges:
+                for e in edges:
+                    f.write(f"{int(e[0])} {int(e[1])}\n")
+
+            # 写入面数据
+            if has_faces:
+                for face in faces:
+                    f.write(f"3 {int(face[0])} {int(face[1])} {int(face[2])}\n")
 
     # =========================
     # 辅助函数: 在平面上计算面积

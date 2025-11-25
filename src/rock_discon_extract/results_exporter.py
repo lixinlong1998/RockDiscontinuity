@@ -1,10 +1,11 @@
 import csv
 import os
 from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 from scipy.spatial import ConvexHull
-from plyfile import PlyData, PlyElement
 from datetime import datetime
+
 from .logging_utils import LoggerManager, Timer
 from .geometry import Discontinuity, Plane
 from .pointcloud import PointCloud
@@ -15,24 +16,27 @@ class ResultsExporter:
     功能简介:
         从 PointCloud 与 Discontinuity 列表中, 生成用于分析与可视化的结果文件,
         包括:
-            1) 点级 CSV (每行一个点, 含平面/结构面信息)
+            1) 点级 CSV (每行一个点, 含平面/结构面信息以及局部曲率、点到平面距离)
             2) 结构面级 CSV (每行一个 Discontinuity)
-            3) 每个结构面的凸包多边形 PLY 文件(便于 Meshlab 可视化, 当前实现为 vertex+edge)
+            3) 所有结构面的凸包多边形 PLY 文件(便于 MeshLab / CloudCompare 可视化,
+               当前实现为 vertex + face, 同时可选 edge)
 
     实现思路(概要):
         - 在构造函数中保存 point_cloud 与 discontinuities, 以及可选的 cluster_labels。
         - 点级 CSV:
             遍历所有 Discontinuity/Segment/point_indices, 对每个点写出一行记录,
-            包含点坐标/法向/颜色, 所属 Discontinuity/Segment, 以及平面参数 A,B,C,D 和 RMS。
+            包含点坐标/法向/颜色, 所属 Discontinuity/Segment, 以及平面参数 A,B,C,D,
+            平均拟合误差 RMS、局部曲率 Curvature、点到平面的距离 DistToPlane。
         - 结构面级 CSV:
             对每个 Discontinuity:
                 * 汇总该结构面所有点索引(去重)
-                * 基于代表平面(第一个 Segment 的 plane) 和结构面自身的凸包计算面积
+                * 基于代表平面 plane_ref 和结构面自身的凸包计算面积
                 * 汇总 PointsNumber / TraceLength / Roughness / MeanRMS 等指标
         - 凸包 PLY:
             对每个 Discontinuity:
                 * 使用 Discontinuity 中预计算好的 polygon_points (凸包边界点)
-                * 将边界点按顺序连成 edge, 以 PLY 的 vertex+edge 形式导出
+                * 将边界点按顺序构造三角面(扇形剖分), 以 PLY 的 vertex + face 形式导出;
+                * 每个结构面使用统一颜色, 有利于在可视化软件中区分不同结构面。
 
     输入:
         point_cloud: PointCloud
@@ -47,11 +51,11 @@ class ResultsExporter:
     """
 
     def __init__(
-            self,
-            point_cloud: PointCloud,
-            discontinuities: List[Discontinuity],
-            cluster_labels: Optional[np.ndarray] = None,
-            algorithm_name: str = ""
+        self,
+        point_cloud: PointCloud,
+        discontinuities: List[Discontinuity],
+        cluster_labels: Optional[np.ndarray] = None,
+        algorithm_name: str = "",
     ):
         self.logger = LoggerManager.GetLogger(self.__class__.__name__)
         self.point_cloud = point_cloud
@@ -73,9 +77,9 @@ class ResultsExporter:
         )
 
     def ExportAll(
-            self,
-            result_root_dir: str,
-            point_cloud_path: str
+        self,
+        result_root_dir: str,
+        point_cloud_path: str,
     ) -> Dict[str, str]:
         """
         功能简介:
@@ -94,7 +98,7 @@ class ResultsExporter:
                - basename_polygons.ply
             4) 分别调用 ExportPointLevelCsv / ExportDiscontinuityLevelCsv /
                ExportDiscontinuityPolygonsToPly;
-            5) 返回包含输出路径信息的字典, 便于上层记录或打印.
+            5) 返回包含输出路径信息的字典, 便于上层记录或打印。
 
         输入:
             result_root_dir: str
@@ -132,21 +136,23 @@ class ResultsExporter:
         """
         功能简介:
             导出点级 CSV 文件, 每一行代表一个属于某个结构面的点,
-            包含几何属性和结构面/平面信息.
+            包含几何属性、结构面/平面信息, 以及局部曲率与点到平面的距离。
 
         实现思路:
             1) 打开 csv 文件, 写入表头:
                [X, Y, Z, nx, ny, nz, R, G, B,
                 Discontinuity_id, Cluster_id, Segment_id,
-                A, B, C, D, RMS]
+                A, B, C, D, RMS,
+                Curvature, DistToPlane]
             2) 遍历所有 Discontinuity (按列表索引作为 Discontinuity_id):
                遍历其所有 Segment (索引作为 Segment_id):
                  对于 segment.point_indices 中的每个点索引:
-                     - 取出点的坐标/颜色/法向;
-                     - cluster_id: 若有 cluster_labels 则用对应值, 否则为 -1;
+                     - 取出点的坐标/颜色/法向/曲率;
+                     - cluster_id: 若有 cluster_labels 则用对应值, 否则为 -1 或 disc.cluster_id;
                      - 平面参数 A,B,C,D 与 plane.rmse;
+                     - DistToPlane: 当前点到该平面的距离(绝对值);
                      - 写入一行 CSV.
-            3) 记录总写入点数并输出日志.
+            3) 记录总写入点数并输出日志。
 
         输入:
             csv_path: str
@@ -163,16 +169,29 @@ class ResultsExporter:
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 # 表头
-                writer.writerow([
-                    "X", "Y", "Z",
-                    "nx", "ny", "nz",
-                    "R", "G", "B",
-                    "Discontinuity_id",
-                    "Cluster_id",
-                    "Segment_id",
-                    "A", "B", "C", "D",
-                    "RMS"
-                ])
+                writer.writerow(
+                    [
+                        "X",
+                        "Y",
+                        "Z",
+                        "nx",
+                        "ny",
+                        "nz",
+                        "R",
+                        "G",
+                        "B",
+                        "Discontinuity_id",
+                        "Cluster_id",
+                        "Segment_id",
+                        "A",
+                        "B",
+                        "C",
+                        "D",
+                        "RMS",
+                        "Curvature",
+                        "DistToPlane",
+                    ]
+                )
 
                 for disc_id, disc in enumerate(self.discontinuities):
                     # 若 Discontinuity 对象上有 cluster_id 属性则使用, 否则默认 -1
@@ -201,22 +220,45 @@ class ResultsExporter:
                             G = p.g
                             Bc = p.b  # 避免与变量 B 重名
 
+                            # 曲率: 若未赋值则导出 NaN
+                            curvature = (
+                                float(p.curvature)
+                                if hasattr(p, "curvature")
+                                else float("nan")
+                            )
+
                             # cluster_id: 优先使用外部 cluster_labels
                             if self.cluster_labels is not None:
                                 cluster_id = int(self.cluster_labels[pt_idx])
                             else:
                                 cluster_id = disc_cluster_id if disc_cluster_id != -1 else -1
 
-                            writer.writerow([
-                                x, y, z,
-                                nx, ny, nz,
-                                R, G, Bc,
-                                disc_id,
-                                cluster_id,
-                                seg_id,
-                                A, B, C, D,
-                                rms
-                            ])
+                            # 点到平面的距离(绝对值)
+                            dist_to_plane = abs(A * x + B * y + C * z + D)
+
+                            writer.writerow(
+                                [
+                                    x,
+                                    y,
+                                    z,
+                                    nx,
+                                    ny,
+                                    nz,
+                                    R,
+                                    G,
+                                    Bc,
+                                    disc_id,
+                                    cluster_id,
+                                    seg_id,
+                                    A,
+                                    B,
+                                    C,
+                                    D,
+                                    rms,
+                                    curvature,
+                                    dist_to_plane,
+                                ]
+                            )
                             count_rows += 1
 
             self.logger.info(
@@ -235,17 +277,15 @@ class ResultsExporter:
 
         实现思路:
             对每个 Discontinuity:
-                1) 汇总所有 segment 的点索引, 去重得到 indices_all;
+                1) 使用其自身的 point_indices 计算 PointsNumber;
                 2) 选择代表平面 plane_ref:
                    - 若 segments 非空, 取第一个 segment 的 plane;
                    - 若 segments 为空, 跳过该结构面;
-                3) 基于 indices_all 和 plane_ref 计算:
-                   - Area: 将点云投影到 plane_ref 的局部 2D 坐标系中,
-                     对 2D 点做 ConvexHull, 按顶点顺序用"鞋带公式"计算面积;
-                   - TraceLength: 所有 segment.trace_length 之和;
-                   - PointsNumber: indices_all 的大小;
-                   - MeanRMS: 各 segment plane.rmse 的平均值(若无 segment 则跳过);
-                4) 写入 CSV 行:
+                3) 基于 plane_ref 和 Discontinuity.ComputePolygonAndArea 计算:
+                   - Area: 凸包多边形面积;
+                4) TraceLength: 所有 segment.trace_length 之和;
+                5) MeanRMS: 各 segment plane.rmse 的平均值(若无 segment 则跳过);
+                6) 写入 CSV 行:
                    [Discontinuity_id, Cluster_id, Dip, Dipdir,
                     A, B, C, D, PointsNumber, Area, TraceLength,
                     Roughness, MeanRMS]
@@ -259,24 +299,31 @@ class ResultsExporter:
         """
         os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
 
-        with Timer(f"ExportDiscontinuityLevelCsv({os.path.basename(csv_path)})", self.logger):
+        with Timer(
+            f"ExportDiscontinuityLevelCsv({os.path.basename(csv_path)})", self.logger
+        ):
             count_rows = 0
 
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 # 表头
-                writer.writerow([
-                    "Discontinuity_id",
-                    "Cluster_id",
-                    "Dip",
-                    "Dipdir",
-                    "A", "B", "C", "D",
-                    "PointsNumber",
-                    "Area",
-                    "TraceLength",
-                    "Roughness",
-                    "MeanRMS"
-                ])
+                writer.writerow(
+                    [
+                        "Discontinuity_id",
+                        "Cluster_id",
+                        "Dip",
+                        "Dipdir",
+                        "A",
+                        "B",
+                        "C",
+                        "D",
+                        "PointsNumber",
+                        "Area",
+                        "TraceLength",
+                        "Roughness",
+                        "MeanRMS",
+                    ]
+                )
 
                 for disc_id, disc in enumerate(self.discontinuities):
                     if not disc.segments:
@@ -308,18 +355,23 @@ class ResultsExporter:
                     disc.ComputePolygonAndArea(self.point_cloud, plane_ref)
                     area = float(getattr(disc, "area", 0.0))
 
-                    writer.writerow([
-                        disc_id,
-                        disc_cluster_id,
-                        disc.dip,
-                        disc.dip_direction,
-                        A, B, C, D,
-                        points_number,
-                        area,
-                        trace_length,
-                        roughness,
-                        mean_rms
-                    ])
+                    writer.writerow(
+                        [
+                            disc_id,
+                            disc_cluster_id,
+                            disc.dip,
+                            disc.dip_direction,
+                            A,
+                            B,
+                            C,
+                            D,
+                            points_number,
+                            area,
+                            trace_length,
+                            roughness,
+                            mean_rms,
+                        ]
+                    )
                     count_rows += 1
 
             self.logger.info(
@@ -330,33 +382,39 @@ class ResultsExporter:
     # 凸包多边形 PLY 导出
     # =========================
 
-    def ExportDiscontinuityPolygonsToPly(
-        self,
-        ply_path: str
-    ) -> None:
+    def ExportDiscontinuityPolygonsToPly(self, ply_path: str) -> None:
         """
         功能简介:
             将所有 Discontinuity 的凸包边界点导出到一个 PLY 文件,
-            每个结构面的边界以点+edge 的形式表示, 便于在 MeshLab 中查看多边形边界。
+            每个结构面的边界以点 + 三角面(face) 的形式表示, 可选增加边(edge),
+            便于在 MeshLab / CloudCompare 中查看多边形边界与面片。
 
         实现思路:
             对每个 Discontinuity:
                 1) 调用 disc.ComputePolygonAndArea(self.point_cloud) 保证 polygon_points 可用;
                 2) 从 disc.polygon_points 追加到全局顶点列表;
-                3) 若有 disc.polygon_point_indices, 则从原点云取颜色; 否则统一用白色;
-                4) 为该结构面顶点构造一圈 edges, 按顺序连接并首尾相连;
+                3) 颜色: 按结构面 ID 生成统一 RGB 颜色, 每个结构面所有边界点
+                   颜色相同, 方便区分不同结构面;
+                4) 为该结构面顶点构造一圈 edges (可选), 按顺序连接并首尾相连;
+                5) 为该结构面顶点构造三角面 faces:
+                   - 采用简单扇形剖分: (0,1,2), (0,2,3), ..., (0,m-2,m-1);
             最后调用 _ExportToMeshlabPly:
                 - vertices: 所有结构面的边界点
-                - edges: 所有结构面的边界边
+                - edges: 所有结构面的边界边(当前可留空或仅作辅线)
+                - faces: 所有结构面的三角面片
                 - colors: 对应的顶点颜色
         """
         ply_path = os.path.abspath(ply_path)
         os.makedirs(os.path.dirname(ply_path), exist_ok=True)
 
-        with Timer(f"ExportDiscontinuityPolygonsToPly({os.path.basename(ply_path)})", self.logger):
-            vertices_list = []
-            colors_list = []
-            edges_list = []
+        with Timer(
+            f"ExportDiscontinuityPolygonsToPly({os.path.basename(ply_path)})",
+            self.logger,
+        ):
+            vertices_list: List[np.ndarray] = []
+            colors_list: List[np.ndarray] = []
+            edges_list: List[np.ndarray] = []
+            faces_list: List[np.ndarray] = []
             offset = 0  # 全局顶点索引偏移量
 
             for disc_id, disc in enumerate(self.discontinuities):
@@ -373,23 +431,15 @@ class ResultsExporter:
                 m = pts.shape[0]
                 vertices_list.append(pts)
 
-                # 颜色: 若 polygon_point_indices 与 pts 对应, 则从原点云读取颜色, 否则统一用白色
-                colors_disc = []
-                poly_indices = getattr(disc, "polygon_point_indices", None)
-                if poly_indices is not None and len(poly_indices) == m:
-                    for idx in poly_indices:
-                        p = self.point_cloud.points[int(idx)]
-                        colors_disc.append([
-                            int(max(0, min(255, p.r))),
-                            int(max(0, min(255, p.g))),
-                            int(max(0, min(255, p.b))),
-                        ])
-                else:
-                    colors_disc = [[255, 255, 255]] * m
-                colors_list.append(np.asarray(colors_disc, dtype=np.uint8))
+                # 颜色: 按 Discontinuity ID 分配统一颜色
+                base_color = self._GenerateColorFromId(disc_id)
+                colors_disc = np.tile(
+                    np.array(base_color, dtype=np.uint8), (m, 1)
+                )  # (m, 3)
+                colors_list.append(colors_disc)
 
-                # 构造边: (offset+i, offset+i+1), 首尾相连
-                edges_disc = []
+                # 构造边: (offset+i, offset+i+1), 首尾相连(可选)
+                edges_disc: List[List[int]] = []
                 if m >= 2:
                     for i in range(m - 1):
                         edges_disc.append([offset + i, offset + i + 1])
@@ -397,6 +447,14 @@ class ResultsExporter:
                         edges_disc.append([offset + m - 1, offset])  # 闭合
                 if edges_disc:
                     edges_list.append(np.asarray(edges_disc, dtype=np.int32))
+
+                # 构造三角面: 简单扇形剖分
+                faces_disc: List[List[int]] = []
+                if m >= 3:
+                    for i in range(1, m - 1):
+                        faces_disc.append([offset, offset + i, offset + i + 1])
+                if faces_disc:
+                    faces_list.append(np.asarray(faces_disc, dtype=np.int32))
 
                 offset += m
 
@@ -407,25 +465,37 @@ class ResultsExporter:
             vertices = np.vstack(vertices_list)
             colors = np.vstack(colors_list)
             edges = np.vstack(edges_list) if edges_list else None
+            faces = np.vstack(faces_list) if faces_list else None
 
             self._ExportToMeshlabPly(
                 filename=ply_path,
                 vertices=vertices,
                 edges=edges,
-                faces=None,
-                colors=colors
+                faces=faces,
+                colors=colors,
             )
 
             self.logger.info(
                 f"结构面凸包边界 PLY 导出完成: {ply_path}, "
                 f"共 {vertices.shape[0]} 个边界点, "
-                f"{edges.shape[0] if edges is not None else 0} 条边."
+                f"{edges.shape[0] if edges is not None else 0} 条边, "
+                f"{faces.shape[0] if faces is not None else 0} 个三角面."
             )
 
     @staticmethod
-    def _ExportToMeshlabPly(filename, vertices=None, edges=None, faces=None, colors=None):
+    def _ExportToMeshlabPly(
+        filename, vertices=None, edges=None, faces=None, colors=None
+    ):
         """
-        导出点、线、面到 PLY 文件，支持 MeshLab 可视化
+        功能简介:
+            导出点、线、面到 PLY 文件，支持 MeshLab / CloudCompare 可视化.
+
+        实现思路:
+            - 按 PLY ASCII 格式写入 header 和各 element 数据;
+            - 顶点部分支持附带 RGB 颜色;
+            - 边部分为 element edge, 每行 "vertex1 vertex2";
+            - 面部分为 element face, 每行 "3 v0 v1 v2"。
+            只要传入对应数组即可, 不要求三者必须同时存在。
 
         参数:
             filename: str
@@ -496,8 +566,9 @@ class ResultsExporter:
                     f.write(f"3 {int(face[0])} {int(face[1])} {int(face[2])}\n")
 
     # =========================
-    # 辅助函数: 在平面上计算面积
+    # 辅助函数: 创建输出子目录
     # =========================
+
     def _CreateOutputSubdir(self, result_root_dir: str) -> str:
         """
         功能简介:
@@ -529,10 +600,14 @@ class ResultsExporter:
         self.logger.info(f"结果输出子目录: {out_dir}")
         return out_dir
 
+    # =========================
+    # 辅助函数: 在平面上计算面积
+    # =========================
+
     def _ComputeAreaOnPlane(
-            self,
-            point_indices: np.ndarray,
-            plane: Plane
+        self,
+        point_indices: np.ndarray,
+        plane: Plane,
     ) -> float:
         """
         【未经验证】功能简介:
@@ -570,11 +645,15 @@ class ResultsExporter:
 
         # 提取 3D 坐标
         pts3d = np.array(
-            [[self.point_cloud.points[i].x,
-              self.point_cloud.points[i].y,
-              self.point_cloud.points[i].z]
-             for i in indices_unique],
-            dtype=np.float64
+            [
+                [
+                    self.point_cloud.points[i].x,
+                    self.point_cloud.points[i].y,
+                    self.point_cloud.points[i].z,
+                ]
+                for i in indices_unique
+            ],
+            dtype=np.float64,
         )
 
         # 法向与质心
@@ -623,9 +702,9 @@ class ResultsExporter:
     # =========================
 
     def _ComputeConvexHull3D(
-            self,
-            point_indices: np.ndarray,
-            plane: Plane
+        self,
+        point_indices: np.ndarray,
+        plane: Plane,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         【未经验证】功能简介:
@@ -654,11 +733,15 @@ class ResultsExporter:
 
         # 提取 3D 坐标
         pts3d = np.array(
-            [[self.point_cloud.points[i].x,
-              self.point_cloud.points[i].y,
-              self.point_cloud.points[i].z]
-             for i in indices_unique],
-            dtype=np.float64
+            [
+                [
+                    self.point_cloud.points[i].x,
+                    self.point_cloud.points[i].y,
+                    self.point_cloud.points[i].z,
+                ]
+                for i in indices_unique
+            ],
+            dtype=np.float64,
         )
 
         # 法向与质心
@@ -697,3 +780,23 @@ class ResultsExporter:
         boundary_indices_global = indices_unique[hull_indices_local]
 
         return boundary_points_3d, boundary_indices_global
+
+    # =========================
+    # 辅助函数: 按结构面 ID 生成颜色
+    # =========================
+
+    @staticmethod
+    def _GenerateColorFromId(disc_id: int) -> Tuple[int, int, int]:
+        """
+        功能简介:
+            根据结构面 ID 生成一个可重复的 RGB 颜色, 用于多边形 PLY 着色。
+
+        实现思路:
+            使用简单的取模运算, 将 disc_id 映射到 [50, 255] 区间内的 RGB 值,
+            尽量避免过暗颜色, 并保证不同 ID 颜色有一定差异。
+        """
+        base = disc_id + 1
+        r = 50 + (base * 73) % 205
+        g = 50 + (base * 131) % 205
+        b = 50 + (base * 197) % 205
+        return int(r), int(g), int(b)

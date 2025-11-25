@@ -62,6 +62,9 @@ if __name__ == "__main__":
     # cloud = GenerateSyntheticPlanePointCloud(num_points=1000)    # 使用合成平面点云, 而不是单个点
     cloud = PointCloudIO.ReadPointCloudAsObjects(point_path, attach_extra_attrs=False)  # 大数据建议先关掉
 
+    # 【可选】2) 估计法向与曲率, 便于后续可视化(CloudCompare 曲率/法向热力图等)
+    cloud.EstimateNormals(k_neighbor=30, est_normals=False, est_curvature=True)  # 若输入 PLY 已带法向, 可以暂时注释掉本行
+
     algorithms = [
         # Open3D 后端 RANSAC
         RansacDetector(
@@ -73,8 +76,8 @@ if __name__ == "__main__":
         ),
 
         RegionGrowingDetector(
-            normal_angle_threshold=10.0,
-            distance_threshold=0.02,
+            normal_angle_threshold=20.0,
+            distance_threshold=0.224,
             min_region_size=50
         ),
         # TODO: 其它算法同样在此添加
@@ -82,19 +85,18 @@ if __name__ == "__main__":
 
     pipeline = RockDiscontinuityPipeline(cloud, algorithms)
     results = pipeline.RunAll()
-    print(results)
-    disc_list = results["RANSAC-open3d"]  # 或你实际的算法名
+    # print(results)
 
     # 4) 导出结果
-    exporter = ResultsExporter(
-        point_cloud=cloud,
-        discontinuities=disc_list,
-        cluster_labels=None,
-        algorithm_name="RANSAC_open3d"
-    )
+    for algorithm_name, disc_list in results.items():
+        print(algorithm_name, "=>", len(disc_list), "discontinuities")
 
-    paths = exporter.ExportAll(result_path, point_path)
-    print(paths)
+        exporter = ResultsExporter(
+            point_cloud=cloud,
+            discontinuities=disc_list,
+            cluster_labels=None,
+            algorithm_name=algorithm_name
+        )
 
-    for name, dis_list in results.items():
-        print(name, "=>", len(dis_list), "discontinuities")
+        paths = exporter.ExportAll(result_path, point_path)
+        print(paths)

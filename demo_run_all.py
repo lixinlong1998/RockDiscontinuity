@@ -13,6 +13,8 @@ from src.rock_discon_extract.algorithms.ransac import RansacDetector
 from src.rock_discon_extract.algorithms.region_growing import RegionGrowingDetector
 from src.rock_discon_extract.pipeline import RockDiscontinuityPipeline
 from src.rock_discon_extract.results_exporter import ResultsExporter
+from src.rock_discon_extract.visualizer import ResultsVisualizer
+from src.rock_discon_extract.logging_utils import LoggerManager
 
 
 def GenerateSyntheticPlanePointCloud(num_points: int = 1000) -> PointCloud:
@@ -58,6 +60,9 @@ if __name__ == "__main__":
     point_path = r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\data\rock_data\Rock_GLS4_part1_localize_0.05m.ply"
     result_path = r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result"
 
+    # 0) 创建log文件
+    LoggerManager.CreatLogFile(result_path)
+
     # 1) 读取真实点云
     # cloud = GenerateSyntheticPlanePointCloud(num_points=1000)    # 使用合成平面点云, 而不是单个点
     cloud = PointCloudIO.ReadPointCloudAsObjects(point_path, attach_extra_attrs=False)  # 大数据建议先关掉
@@ -68,17 +73,17 @@ if __name__ == "__main__":
     algorithms = [
         # Open3D 后端 RANSAC
         RansacDetector(
-            distance_threshold=0.05,
-            angle_threshold=10.0,
+            distance_threshold=0.25,
+            angle_threshold=15,
             min_inliers=100,
             max_iterations=1000,
             impl_mode="open3d"  # "sklearn" "manual"
         ),
 
         RegionGrowingDetector(
-            normal_angle_threshold=20.0,
-            distance_threshold=0.224,
-            min_region_size=50
+            normal_angle_threshold=15.0,
+            distance_threshold=0.25,
+            min_region_size=100
         ),
         # TODO: 其它算法同样在此添加
     ]
@@ -88,6 +93,7 @@ if __name__ == "__main__":
     # print(results)
 
     # 4) 导出结果
+    paths_list = []
     for algorithm_name, disc_list in results.items():
         print(algorithm_name, "=>", len(disc_list), "discontinuities")
 
@@ -99,4 +105,13 @@ if __name__ == "__main__":
         )
 
         paths = exporter.ExportAll(result_path, point_path)
-        print(paths)
+        # print(paths)
+        paths_list.append((paths["dir"], paths["point_cloud_path"]))
+
+    # 5) 结果可视化
+    plots_list = ["dipdir_rose"]
+    vis = ResultsVisualizer(paths_list=paths_list)
+    # 单一结果分析 + 批处理: 每个 out_dir 下各出一张 dipdir 玫瑰图
+    vis.ExportAllSingleAnalysis(plots_name=plots_list, output_formats=("png", "svg"), show=False)
+    # 多结果对比分析 + 批处理: 对同一 basename 下的多个结果叠加对比
+    vis.ExportAllCompareAnalysis(plots_name=plots_list, output_formats=("png", "svg"), show=False)

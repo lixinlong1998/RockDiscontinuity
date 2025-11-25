@@ -138,7 +138,7 @@ class Discontinuity:
         roughness: float
             结构面粗糙度指标(由外部算法定义), 默认 0.0.
         algorithm_name: str
-            生成该结构面的算法名称(例如 'RANSAC-open3d').
+            生成该结构面的算法名称(例如 'RANSAC_open3d').
     """
 
     def __init__(

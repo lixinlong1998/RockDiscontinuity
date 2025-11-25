@@ -123,7 +123,7 @@ class RansacDetector(PlaneDetectionAlgorithm):
         输出:
             discontinuities: List[Discontinuity]
         """
-        self.name = self.name + "-manual"
+        self.name = self.name + "_manual"
         # 将点云坐标转换为 numpy 数组, 形状为 (N, 3)
         coords = np.array(
             [[p.x, p.y, p.z] for p in point_cloud.points],
@@ -254,7 +254,7 @@ class RansacDetector(PlaneDetectionAlgorithm):
             self.logger.warning("Open3D not available, fallback to manual.")
             return self._DetectManual(point_cloud)
 
-        self.name = self.name + "-open3d"
+        self.name = self.name + "_open3d"
         coords = np.array(
             [[p.x, p.y, p.z] for p in point_cloud.points],
             dtype=float
@@ -356,7 +356,7 @@ class RansacDetector(PlaneDetectionAlgorithm):
             self.logger.warning("scikit-learn is not available, fallback to manual RANSAC.")
             return self._DetectManual(point_cloud)
 
-        self.name = self.name + "-sklearn"
+        self.name = self.name + "_sklearn"
         coords = np.array(
             [[p.x, p.y, p.z] for p in point_cloud.points],
             dtype=float

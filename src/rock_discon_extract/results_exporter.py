@@ -51,11 +51,11 @@ class ResultsExporter:
     """
 
     def __init__(
-        self,
-        point_cloud: PointCloud,
-        discontinuities: List[Discontinuity],
-        cluster_labels: Optional[np.ndarray] = None,
-        algorithm_name: str = "",
+            self,
+            point_cloud: PointCloud,
+            discontinuities: List[Discontinuity],
+            cluster_labels: Optional[np.ndarray] = None,
+            algorithm_name: str = "",
     ):
         self.logger = LoggerManager.GetLogger(self.__class__.__name__)
         self.point_cloud = point_cloud
@@ -77,9 +77,9 @@ class ResultsExporter:
         )
 
     def ExportAll(
-        self,
-        result_root_dir: str,
-        point_cloud_path: str,
+            self,
+            result_root_dir: str,
+            point_cloud_path: str,
     ) -> Dict[str, str]:
         """
         功能简介:
@@ -126,6 +126,7 @@ class ResultsExporter:
             "points_csv": points_csv,
             "disc_csv": disc_csv,
             "polygons_ply": polygons_ply,
+            "point_cloud_path": point_cloud_path
         }
 
     # =========================
@@ -300,7 +301,7 @@ class ResultsExporter:
         os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
 
         with Timer(
-            f"ExportDiscontinuityLevelCsv({os.path.basename(csv_path)})", self.logger
+                f"ExportDiscontinuityLevelCsv({os.path.basename(csv_path)})", self.logger
         ):
             count_rows = 0
 
@@ -408,8 +409,8 @@ class ResultsExporter:
         os.makedirs(os.path.dirname(ply_path), exist_ok=True)
 
         with Timer(
-            f"ExportDiscontinuityPolygonsToPly({os.path.basename(ply_path)})",
-            self.logger,
+                f"ExportDiscontinuityPolygonsToPly({os.path.basename(ply_path)})",
+                self.logger,
         ):
             vertices_list: List[np.ndarray] = []
             colors_list: List[np.ndarray] = []
@@ -484,7 +485,7 @@ class ResultsExporter:
 
     @staticmethod
     def _ExportToMeshlabPly(
-        filename, vertices=None, edges=None, faces=None, colors=None
+            filename, vertices=None, edges=None, faces=None, colors=None
     ):
         """
         功能简介:
@@ -605,9 +606,9 @@ class ResultsExporter:
     # =========================
 
     def _ComputeAreaOnPlane(
-        self,
-        point_indices: np.ndarray,
-        plane: Plane,
+            self,
+            point_indices: np.ndarray,
+            plane: Plane,
     ) -> float:
         """
         【未经验证】功能简介:
@@ -702,9 +703,9 @@ class ResultsExporter:
     # =========================
 
     def _ComputeConvexHull3D(
-        self,
-        point_indices: np.ndarray,
-        plane: Plane,
+            self,
+            point_indices: np.ndarray,
+            plane: Plane,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         【未经验证】功能简介:

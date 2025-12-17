@@ -127,44 +127,103 @@ class Segment:
 class Discontinuity:
     """
     功能简介:
-        表示岩体中的一个结构面(节理/断层等), 包含一个或多个连通片段.
-    参数说明:
+        表示一个岩体结构面(Discontinuity)，由若干个 Segment 组成，并在后处理阶段
+        通过 ComputeGeometry 计算其几何属性(凸包、多边形面积、迹长、宽度等)。
+
+    主要属性(与本次修改相关):
         segments: List[Segment]
-            组成该结构面的所有连通片(一个结构面可以由多个离散片段组成).
-        dip: float
-            倾角(度).
-        dip_direction: float
-            倾向(度, 0~360).
-        roughness: float
-            结构面粗糙度指标(由外部算法定义), 默认 0.0.
-        algorithm_name: str
-            生成该结构面的算法名称(例如 'RANSAC_open3d').
+            该结构面包含的所有连通片，每个 Segment 中通常包含:
+                - plane: Plane, 对该连通片拟合的平面
+                - point_indices: List[int], 所在点云中的点索引
+        point_indices: List[int]
+            该结构面包含的所有点在全局点云中的索引(可包含重复, 由外部填充)。
+
+        # 凸包/多边形相关:
+        polygon_point_indices: List[int]
+            结构面边界多边形的点索引(全局点云索引, 按凸包顺序排列)。
+        polygon_points: Optional[np.ndarray]
+            对应 polygon_point_indices 的原始 3D 坐标, 形状 (M, 3)。
+        polygon_points_proj: Optional[np.ndarray]
+            polygon_points 在代表平面上的投影 3D 坐标, 形状 (M, 3)。
+
+        # 质心:
+        centroid: Optional[np.ndarray]
+            该结构面所有点的原始 3D 质心, 形状 (3,)。
+        centroid_proj: Optional[np.ndarray]
+            centroid 投影到代表平面上的 3D 坐标, 形状 (3,)。
+
+        # 面积与迹线/宽度:
+        area: float
+            多边形面积, 在代表平面上的面积(与坐标单位的平方一致)。
+        trace_length: float
+            基于 polygon_points_proj 计算的迹线长度(最大点对距离)。
+        trace_vertex1: Optional[np.ndarray]
+            迹线端点 1, 3D 坐标(在平面上的投影点)。
+        trace_vertex2: Optional[np.ndarray]
+            迹线端点 2, 3D 坐标(在平面上的投影点)。
+        width_max: float
+            沿迹线正交方向, 在多边形内部采样得到的最大宽度。
+        width_avg: float
+            同上, 采样宽度的平均值。
+        width_min: float
+            同上, 采样宽度的最小值。
+
+    典型调用流程:
+        1) 检测算法生成 Discontinuity 对象, 填充 segments 和 point_indices;
+        2) 在导出/分析前调用:
+           disc.ComputeGeometry(point_cloud)
+        3) 之后即可使用:
+           - disc.area
+           - disc.polygon_points / disc.polygon_points_proj
+           - disc.trace_length, disc.trace_vertex1/2
+           - disc.width_max / width_avg / width_min
+           进行可视化和统计分析。
     """
 
     def __init__(
             self,
             segments: List[Segment],
+            plane: Plane,
             dip: float,
             dip_direction: float,
             roughness: float = 0.0,
             algorithm_name: str = ""
     ):
-        self.segments = segments
-        self.dip = dip
+        # 创建时需给出的参数
+        self.segments = segments  # 结构面包含的连通片列表
+        self.plane = plane
+        self.dip = dip  # 倾角/倾向 (创建时给出)
         self.dip_direction = dip_direction
-        self.roughness = roughness
+        self.roughness = roughness  # 粗糙度 统计指标, 创建时给出
         self.algorithm_name = algorithm_name
+        self.point_indices: List[int] = self._CollectAllPointIndices()  # 结构面所有点的全局索引(各segment.point_indices 的并集)
 
-        # 结构面上所有点的全局索引(各 segment.point_indices 的并集)
-        self.point_indices: List[int] = self._CollectAllPointIndices()
+        # 凸包边界点信息(在调用 ComputeGeometry 后填充)
+        self.polygon_point_indices: List[int] = []  # 凸包边界点在全局点云中的索引(按凸包顺序)
+        self.polygon_points: Optional[np.ndarray] = None  # 原始 3D 边界点坐标数组, shape (M, 3)
+        self.polygon_points_proj: Optional[np.ndarray] = None  # 投影到结构面平面的 3D 边界点, shape (M, 3)
+        self.area: float = 0.0  # 结构面多边形面积(单位与坐标单位平方一致)
+        self.centroid: Optional[np.ndarray] = None  # 所有点的原始三维质心, shape (3,)
+        self.centroid_proj: Optional[np.ndarray] = None  # centroid 投影到结构面平面的 3D 点, shape (3,)
 
-        # 凸包边界点信息(在调用 ComputePolygonAndArea 后填充)
-        #   polygon_point_indices: 凸包边界点在全局点云中的索引(按凸包顺序)
-        #   polygon_points: 对应的 3D 坐标数组, 形状 (M, 3)
-        #   area: 结构面多边形面积(单位与坐标单位平方一致)
-        self.polygon_point_indices: List[int] = []
-        self.polygon_points: Optional[np.ndarray] = None
-        self.area: float = 0.0
+        # 迹线和宽度(在调用 ComputeGeometry 后填充)
+        self.trace_length: float = 0.0  # 基于 polygon_points_proj 的迹长
+        self.trace_vertex1: Optional[np.ndarray] = None  # 迹线端点1, 3D 点(投影点)
+        self.trace_vertex2: Optional[np.ndarray] = None  # 迹线端点2, 3D 点(投影点)
+        self.width_max: float = 0.0  # 迹线正交方向的最大宽度
+        self.width_avg: float = 0.0  # 平均宽度
+        self.width_min: float = 0.0  # 最小宽度
+
+        # Polygon 几何结果的缓存标记(用于避免重复计算)
+        self._polygon_valid: bool = False
+        self._cached_plane_normal: Optional[np.ndarray] = None
+        self._cached_plane_d: Optional[float] = None
+
+        # 结构面的聚类信息
+        self.cluster_id = -1
+        self.cluster_membership = 0.0
+        self.cluster_is_noise = True
+        self.cluster_confidence = 0.0
 
     def _CollectAllPointIndices(self) -> List[int]:
         """
@@ -188,137 +247,359 @@ class Discontinuity:
         indices_unique = sorted(set(int(i) for i in indices))
         return indices_unique
 
-    def ComputePolygonAndArea(self, point_cloud, plane=None) -> None:
+    # ---------------------------------------------------------
+    # 多边形/面积/迹长/宽度计算
+    # ---------------------------------------------------------
+    def ComputeGeometry(self, point_cloud: "PointCloud", force_recompute: bool = False) -> None:
         """
         功能简介:
-            对当前 Discontinuity 对应的所有点进行平面投影与凸包计算,
-            得到边界多边形顶点坐标与对应面积, 并保存在 polygon_points、
-            polygon_point_indices 和 area 中。
+            基于当前结构面的所有点(由 self.point_indices 指定),
+            在代表平面上计算:
+                - 凸包边界多边形(原始/投影 3D 边界点及其索引)
+                - 多边形面积
+                - 迹线(最大点对距离)及其 3D 端点
+                - 沿迹线正交方向的宽度统计(width_max/width_avg/width_min)
 
-        实现思路:
-            1) 从 self.point_indices 中去重后提取所有 3D 坐标;
-            2) 选择代表平面 plane_ref:
-               - 若参数 plane 不为 None, 使用该平面;
-               - 否则, 若 self.segments 非空, 使用第一个 segment 的 plane;
-               - 否则无法计算, 将 area 置为 0.0, polygon_points 置为 None;
-            3) 取平面法向 n 和质心 centroid, 构造局部 2D 坐标系 (u, v):
-               - 选取 ref 向量(避免与 n 平行), 令 u = normalize(ref × n),
-                 再令 v = n × u;
-            4) 将所有点相对 centroid 平移, 投影到 (u, v) 上得到 2D 坐标;
-            5) 使用 ConvexHull 对 2D 点集做凸包, 得到顶点顺序 hull.vertices;
-            6) 根据凸包索引得到:
-               - polygon_point_indices: 对应全局索引;
-               - polygon_points: 对应 3D 坐标;
-            7) 使用鞋带公式在 2D 坐标下计算多边形面积, 赋值给 self.area。
+        实现思路(更新版):
+            0) 引入简单缓存机制:
+               - 若上一次已计算过多边形且:
+                    * 本次未传入新的 plane, 或
+                    * 传入的 plane 与上次的平面参数近似一致,
+                 且 force_recompute=False, 则直接返回, 避免重复计算.
+            1) 若 plane 参数给定, 直接作为代表平面 plane_ref;
+               否则从 segments 中筛选 plane 不为 None 的平面,
+               使用简单打分(例如: segment 点数)选出一个代表平面。
+            2) 基于去重后的self.point_indices提取所有 3D 点 pts3d。
+            3) 计算所有点的原始质心 centroid, 并投影到 plane_ref 得到 centroid_proj。
+            4) 将所有点投影到 plane_ref, 得到 pts3d_proj。
+            5) 在 plane_ref 上构造局部 2D 坐标系 (u, v), 以 centroid_proj 为原点,
+               将 pts3d_proj 映射到 2D: pts2d = (dot(q,u), dot(q,v))。
+            6) 对 pts2d 做 ConvexHull, 得到边界顶点顺序 hull.vertices, 从而得到:
+                - polygon_point_indices (全局索引)
+                - polygon_points (原始 3D)
+                - polygon_points_proj (投影 3D)
+            7) 使用“鞋带公式”在 2D 平面上计算多边形面积, 赋值到 self.area。
+            8) 基于 2D 边界多边形:
+                - 使用“最远点对”求迹线端点(2D), 迹长为最大点对距离;
+                - 将端点映射回 3D(利用 polygon_points_proj), 填充 trace_vertex1/2, trace_length。
+            9) 估算点间平均间距:
+                - 令 avg_spacing ≈ sqrt(area / N_all), N_all 为结构面的点数。
+               按此步长在迹线上均匀采样若干点(至少 3 个, 至多 200 个)。
+               对每个采样点:
+                - 在 2D 中沿迹线的正交方向构造一条直线, 与凸多边形求交;
+                - 若求交得到一段线段, 其长度即为该位置的宽度;
+               汇总所有宽度, 计算 width_max/width_avg/width_min。
 
         输入:
-            point_cloud:
-                PointCloud 对象, 需包含属性 points, 且 points[i] 至少有 x,y,z.
-            plane:
-                可选的代表平面(Plane). 若为 None, 默认取第一个 segment 的 plane.
+            point_cloud: PointCloud
+                全局点云对象, 用于根据索引访问点坐标。
+            plane: Optional[Plane]
+                代表该结构面的平面; 若为 None, 则从 self.segments 中自动选取。
+            force_recompute: bool
+                若为 True, 无视缓存, 强制重新计算。
 
         输出:
-            无(结果直接写入对象属性).
+            无, 但会原地更新:
+                self.polygon_point_indices
+                self.polygon_points
+                self.polygon_points_proj
+                self.centroid
+                self.centroid_proj
+                self.area
+                self.trace_length
+                self.trace_vertex1 / self.trace_vertex2
+                self.width_max / self.width_avg / self.width_min
         """
-        # 点数不足三点, 无法形成多边形
-        if not self.point_indices or len(self.point_indices) < 3:
+        # ---------- -1. 缓存判断: 若已有有效结果且平面未变化, 且不强制重算, 则直接返回 ----------
+        if (not force_recompute) and getattr(self, "_polygon_valid", False):
+            # 未传入新平面, 默认沿用上一次的代表平面
+            if self.plane is None:
+                return
+            # 传入了新平面, 若与上次使用的平面足够接近, 也直接返回
+            if getattr(self, "_cached_plane_normal", None) is not None:
+                n_new = np.asarray(self.plane.normal, dtype=np.float64)
+                d_new = float(self.plane.d)
+                if (np.allclose(self._cached_plane_normal, n_new, atol=1e-6) and
+                        abs(self._cached_plane_d - d_new) < 1e-6):
+                    return
+
+        # ---------- 0. 内部工具函数 ----------
+        def _ResetGeometryFields() -> None:
+            """重置所有几何相关字段以及缓存标记。"""
             self.polygon_point_indices = []
             self.polygon_points = None
+            self.polygon_points_proj = None
+            self.centroid = None
+            self.centroid_proj = None
             self.area = 0.0
+            self.trace_length = 0.0
+            self.trace_vertex1 = None
+            self.trace_vertex2 = None
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            # 缓存无效
+            self._polygon_valid = False
+            self._cached_plane_normal = None
+            self._cached_plane_d = None
+
+        def _MarkPolygonValid(plane_used: "Plane") -> None:
+            """标记当前多边形结果已对应该平面, 后续可直接复用。"""
+            self._polygon_valid = True
+            self._cached_plane_normal = np.asarray(plane_used.normal, dtype=np.float64)
+            self._cached_plane_d = float(plane_used.d)
+
+        # ---------- 1. 汇总点索引 ----------
+        if not self.point_indices:
+            _ResetGeometryFields()
             return
 
-        # 代表平面
-        plane_ref = plane
-        if plane_ref is None:
-            if not self.segments:
-                self.polygon_point_indices = []
-                self.polygon_points = None
-                self.area = 0.0
-                return
-            plane_ref = self.segments[0].plane
-
-        # 去重后的全局点索引
-        indices_unique = np.unique(np.asarray(self.point_indices, dtype=int))
-        if indices_unique.shape[0] < 3:
-            # 仍不足 3 点, 仅记录点而不定义面积
-            pts3d = np.array(
-                [[point_cloud.points[i].x,
-                  point_cloud.points[i].y,
-                  point_cloud.points[i].z]
-                 for i in indices_unique],
-                dtype=float
-            )
-            self.polygon_point_indices = indices_unique.tolist()
-            self.polygon_points = pts3d
-            self.area = 0.0
+        if len(self.point_indices) < 3:
+            # 点数不足以形成多边形, 只记录原始质心等简单信息
+            pts3d_small = np.array(
+                [[point_cloud.points[int(i)].x,
+                  point_cloud.points[int(i)].y,
+                  point_cloud.points[int(i)].z] for i in self.point_indices], dtype=np.float64)
+            _ResetGeometryFields()
+            self.polygon_point_indices = self.point_indices
+            self.polygon_points = pts3d_small
+            if pts3d_small.shape[0] > 0:
+                self.centroid = np.mean(pts3d_small, axis=0)
             return
 
-        # 提取 3D 坐标
+        # ---------- 2. 构造 3D 点集合 ----------
         pts3d = np.array(
-            [[point_cloud.points[int(i)].x,
-              point_cloud.points[int(i)].y,
-              point_cloud.points[int(i)].z]
-             for i in indices_unique],
-            dtype=float
-        )
+            [[point_cloud.points[i].x,
+              point_cloud.points[i].y,
+              point_cloud.points[i].z] for i in self.point_indices], dtype=np.float64)
 
-        # 法向与质心
-        n = np.array(plane_ref.normal, dtype=float)
+        centroid_raw = np.mean(pts3d, axis=0)
+        self.centroid = centroid_raw
+
+        # ---------- 3. 选取代表平面 plane_ref ----------
+        if self.plane is not None:
+            plane_ref = self.plane
+        else:
+            candidate_planes: List["Plane"] = []
+            for seg in self.segments:
+                if getattr(seg, "plane", None) is not None:
+                    candidate_planes.append(seg.plane)
+
+            if not candidate_planes:
+                # 无可用平面, 无法进行平面投影
+                _ResetGeometryFields()
+                self.centroid = centroid_raw
+                return
+
+            def _ScorePlane(p: "Plane") -> float:
+                count = 0
+                for seg in self.segments:
+                    if seg.plane is p:
+                        count += len(seg.point_indices)
+                return float(count)
+
+            plane_ref = max(candidate_planes, key=_ScorePlane)
+
+        # 代表平面的法向与质心
+        n = np.array(plane_ref.normal, dtype=np.float64)
         n_norm = np.linalg.norm(n)
         if n_norm < 1e-12:
-            # 平面退化, 不做凸包, 仅记录所有点
-            self.polygon_point_indices = indices_unique.tolist()
-            self.polygon_points = pts3d
-            self.area = 0.0
+            _ResetGeometryFields()
+            self.centroid = centroid_raw
             return
         n = n / n_norm
-        centroid = np.array(plane_ref.centroid, dtype=float)
 
-        # 构造局部坐标系 (u, v)
-        ref = np.array([0.0, 0.0, 1.0], dtype=float)
-        if abs(np.dot(n, ref)) > 0.9:
-            ref = np.array([0.0, 1.0, 0.0], dtype=float)
+        plane_centroid = np.array(plane_ref.centroid, dtype=np.float64)
+
+        # ---------- 4. 质心/所有点投影到平面 ----------
+        vec_c = centroid_raw - plane_centroid
+        dist_c = float(np.dot(vec_c, n))
+        centroid_proj = centroid_raw - dist_c * n
+        self.centroid_proj = centroid_proj
+
+        vec_all = pts3d - plane_centroid[None, :]
+        dist_all = vec_all @ n
+        pts3d_proj = pts3d - dist_all[:, None] * n
+
+        # ---------- 5. 构造局部 2D 坐标系 (u, v) ----------
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        if abs(float(np.dot(ref, n))) > 0.9:
+            ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+
         u = np.cross(ref, n)
         u_norm = np.linalg.norm(u)
         if u_norm < 1e-12:
-            self.polygon_point_indices = indices_unique.tolist()
-            self.polygon_points = pts3d
-            self.area = 0.0
+            _ResetGeometryFields()
+            self.centroid = centroid_raw
+            self.centroid_proj = centroid_proj
             return
         u = u / u_norm
         v = np.cross(n, u)
 
-        # 投影到 2D
-        q = pts3d - centroid
+        q = pts3d_proj - centroid_proj[None, :]
         u_coord = q @ u
         v_coord = q @ v
-        pts2d = np.stack([u_coord, v_coord], axis=1)
+        pts2d = np.stack([u_coord, v_coord], axis=1)  # (N, 2)
 
-        # 计算凸包
+        # ---------- 6. 计算 2D 凸包, 得到边界多边形 ----------
         try:
             hull = ConvexHull(pts2d)
         except Exception:
-            # 若凸包失败, 退化为使用全部点
-            self.polygon_point_indices = indices_unique.tolist()
-            self.polygon_points = pts3d
-            self.area = 0.0
+            _ResetGeometryFields()
+            self.centroid = centroid_raw
+            self.centroid_proj = centroid_proj
             return
 
-        hull_indices = hull.vertices  # 在 indices_unique 内部的索引
-        boundary_points_3d = pts3d[hull_indices]
-        boundary_indices_global = indices_unique[hull_indices]
+        indices_unique = np.unique(np.asarray(self.point_indices, dtype=int))
+        hull_indices_local = hull.vertices  # 在 self.point_indices 中的下标
+        polygon_indices_global = indices_unique[hull_indices_local]
+        polygon_points = pts3d[hull_indices_local]
+        polygon_points_proj = pts3d_proj[hull_indices_local]
 
-        self.polygon_point_indices = boundary_indices_global.tolist()
-        self.polygon_points = boundary_points_3d
+        self.polygon_point_indices = polygon_indices_global.tolist()
+        self.polygon_points = polygon_points
+        self.polygon_points_proj = polygon_points_proj
 
-        # 鞋带公式计算面积(2D 凸包)
-        x = pts2d[hull_indices, 0]
-        y = pts2d[hull_indices, 1]
-        self.area = float(
-            0.5 * abs(
-                np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))
-            )
+        poly2d = pts2d[hull_indices_local]  # (M, 2)
+        m = poly2d.shape[0]
+        if m < 3:
+            # 只有 1–2 个边界点, 面积/宽度为 0
+            self.area = 0.0
+            self.trace_length = 0.0
+            self.trace_vertex1 = None
+            self.trace_vertex2 = None
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            _MarkPolygonValid(plane_ref)
+            return
+
+        # ---------- 7. 使用鞋带公式计算面积 ----------
+        x = poly2d[:, 0]
+        y = poly2d[:, 1]
+        area = 0.5 * abs(
+            float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
         )
+        self.area = float(area)
+
+        # ---------- 8. 计算迹线(最大点对距离) ----------
+        trace_len_sq = 0.0
+        idx1 = 0
+        idx2 = 1
+        for i in range(m):
+            pi = poly2d[i]
+            for j in range(i + 1, m):
+                pj = poly2d[j]
+                d2 = float(np.sum((pi - pj) ** 2))
+                if d2 > trace_len_sq:
+                    trace_len_sq = d2
+                    idx1 = i
+                    idx2 = j
+
+        if trace_len_sq <= 0.0:
+            self.trace_length = 0.0
+            self.trace_vertex1 = None
+            self.trace_vertex2 = None
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            _MarkPolygonValid(plane_ref)
+            return
+
+        trace_length = float(math.sqrt(trace_len_sq))
+        self.trace_length = trace_length
+        self.trace_vertex1 = polygon_points_proj[idx1].astype(np.float64)
+        self.trace_vertex2 = polygon_points_proj[idx2].astype(np.float64)
+
+        # ---------- 9. 沿迹线正交方向估算宽度统计 ----------
+        n_points_all = len(self.point_indices)
+        if area > 0.0 and n_points_all > 0.0:
+            avg_spacing = math.sqrt(area / n_points_all)
+        else:
+            avg_spacing = 0.0
+
+        if avg_spacing <= 0.0:
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            _MarkPolygonValid(plane_ref)
+            return
+
+        est_samples = int(trace_length / avg_spacing)
+        num_samples = max(3, min(200, est_samples))
+        if num_samples < 3:
+            num_samples = 3
+
+        p0_2d = poly2d[idx1]
+        p1_2d = poly2d[idx2]
+        trace_vec = p1_2d - p0_2d
+        trace_len = float(np.linalg.norm(trace_vec))
+        if trace_len <= 1e-12:
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            _MarkPolygonValid(plane_ref)
+            return
+
+        trace_dir = trace_vec / trace_len
+        ortho_dir = np.array([-trace_dir[1], trace_dir[0]], dtype=np.float64)
+
+        widths: List[float] = []
+
+        for k in range(num_samples):
+            t = k / float(num_samples - 1)
+            sample_center = p0_2d + t * trace_vec
+
+            intersection_points: List[np.ndarray] = []
+
+            for i in range(m):
+                pa = poly2d[i]
+                pb = poly2d[(i + 1) % m]
+                edge_vec = pb - pa
+
+                A = np.column_stack((ortho_dir, -edge_vec))  # 2x2
+                b = pa - sample_center
+
+                detA = float(np.linalg.det(A))
+                if abs(detA) < 1e-12:
+                    continue
+
+                try:
+                    params = np.linalg.solve(A, b)
+                except Exception:
+                    continue
+
+                u_param = float(params[1])
+                if -1e-8 <= u_param <= 1.0 + 1e-8:
+                    inter_pt = pa + u_param * edge_vec
+                    intersection_points.append(inter_pt)
+
+            if len(intersection_points) < 2:
+                continue
+
+            inter_arr = np.vstack(intersection_points)
+            proj_vals = inter_arr @ ortho_dir
+            idx_sort = np.argsort(proj_vals)
+            p_min = inter_arr[idx_sort[0]]
+            p_max = inter_arr[idx_sort[-1]]
+            width_val = float(np.linalg.norm(p_max - p_min))
+            if width_val > 0.0:
+                widths.append(width_val)
+
+        if not widths:
+            self.width_max = 0.0
+            self.width_avg = 0.0
+            self.width_min = 0.0
+            _MarkPolygonValid(plane_ref)
+            return
+
+        widths_arr = np.asarray(widths, dtype=np.float64)
+        self.width_max = float(np.max(widths_arr))
+        self.width_avg = float(np.mean(widths_arr))
+        self.width_min = float(np.min(widths_arr))
+
+        # 计算流程完全结束, 标记本次结果可缓存复用
+        _MarkPolygonValid(plane_ref)
 
 
 class Cluster:
@@ -345,3 +626,6 @@ class RockBlock:
     def __init__(self, discontinuities: List[Discontinuity]):
         self.discontinuities = discontinuities
         # TODO: 可扩展体积、重心等属性
+
+
+

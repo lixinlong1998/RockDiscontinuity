@@ -96,6 +96,7 @@ class PointCloud:
 
         # 将所有点坐标整理为 numpy 数组
         coords = np.array([[p.x, p.y, p.z] for p in self.points], dtype=float)
+        self.logger.info("Estimating Normals...")
 
         with Timer(
                 f"PointCloud.EstimateNormals(N={num_points}, k={k_neighbor}, "
@@ -217,3 +218,41 @@ class Chunk:
         self.point_cloud = point_cloud
         self.bounding_box = point_cloud.bounding_box
         self.discontinuities: List[Discontinuity] = []
+
+def GenerateSyntheticPlanePointCloud(num_points=1000) -> PointCloud:
+    """
+    功能简介:
+        生成一个简单的人工平面点云, 用于测试 RANSAC 算法是否正常工作.
+
+    实现思路:
+        - 在一定范围内随机生成平面上的 (x, y) 坐标;
+        - z 由一个简单平面方程给出, 并叠加少量高斯噪声;
+        - 将这些点包装为 Point 对象, 构造 PointCloud.
+
+    输入:
+        num_points: int
+            生成的点数量.
+
+    输出:
+        point_cloud: PointCloud
+            含有 num_points 个近似共面的点云对象.
+    """
+    # 在 [-5, 5] 范围内随机生成 x, y
+    xs = np.random.uniform(-5.0, 5.0, size=num_points)
+    ys = np.random.uniform(-5.0, 5.0, size=num_points)
+
+    # 设定一个简单平面: z = 0.2 * x + 0.1 * y + 1.0 + 噪声
+    noise = np.random.normal(loc=0.0, scale=0.01, size=num_points)
+    zs = 0.2 * xs + 0.1 * ys + 1.0 + noise
+
+    points = []
+    for i in range(num_points):
+        p = Point(
+            x=float(xs[i]),
+            y=float(ys[i]),
+            z=float(zs[i]),
+            point_id=i
+        )
+        points.append(p)
+
+    return PointCloud(points)

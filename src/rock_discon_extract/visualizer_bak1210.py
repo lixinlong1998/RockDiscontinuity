@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import mplstereonet
 from matplotlib import cm
 from matplotlib import gridspec
 from .logging_utils import LoggerManager, Timer
@@ -854,11 +853,11 @@ class ResultsVisualizer:
         dip_deg = df["Dip"].to_numpy(dtype=float)
         dipdir_deg = df["Dipdir"].to_numpy(dtype=float)
         cluster_ids = df["Cluster_id"].to_numpy(dtype=int)
-        clusters_id = df_cluster["Cluster_id"].to_numpy(dtype=int)
-        clusters_dip = df_cluster["Dip"].to_numpy(dtype=float)
-        clusters_dipdir = df_cluster["Dipdir"].to_numpy(dtype=float)
-        clusters_diconnumber = df_cluster["Discontinuity_Number"].to_numpy(dtype=int)
-        clusters_confidence = df_cluster["confidence"].to_numpy(dtype=float)
+        clusters_id = df_cluster["Cluster_id"]
+        clusters_dip = df_cluster["Dip"]
+        clusters_dipdir = df_cluster["Dipdir"]
+        clusters_diconnumber = df_cluster["Discontinuity_Number"]
+        clusters_confidence = df_cluster["confidence"]
 
         # 过滤无效数据
         valid_mask = (
@@ -928,7 +927,7 @@ class ResultsVisualizer:
             ax_table.axis('off')
 
             # 计算聚类统计信息
-            unique_clusters = clusters_id  # np.unique(cluster_ids[cluster_ids >= 0])
+            unique_clusters = np.unique(cluster_ids[cluster_ids >= 0])
             if len(unique_clusters) == 0:
                 # 如果没有聚类信息，显示提示
                 ax_table.text(0.5, 0.5, "No valid clusters found",
@@ -946,9 +945,9 @@ class ResultsVisualizer:
                         continue
 
                     # 计算平均倾角/倾向
-                    cluster_dip = clusters_dip[i]
-                    cluster_dipdir = clusters_dipdir[i]
-                    cluster_count = clusters_diconnumber[i]
+                    cluster_dip = np.mean(dip_deg[mask])
+                    cluster_dipdir = np.mean(dipdir_deg[mask])
+                    cluster_count = np.sum(mask)
 
                     # 确保倾向在 [0, 360) 范围内
                     cluster_dipdir = cluster_dipdir % 360.0
@@ -986,8 +985,8 @@ class ResultsVisualizer:
                 # 调整表格缩放
                 table.scale(1.2, 1.8)
 
-            # # 设置表标题 - 确保中文字体
-            # ax_table.set_title("clusters", fontsize=14, pad=25, weight='bold')
+            # 设置表标题 - 确保中文字体
+            ax_table.set_title("clusters", fontsize=14, pad=25, weight='bold')
 
             # 中部: stereonet
             ax_stereo = fig.add_subplot(gs[0, 1], projection='polar')
@@ -1041,8 +1040,8 @@ class ResultsVisualizer:
             )
 
             # 设置半径网格和标签
-            r_ticks = [np.tan(np.radians(d) / 2.0) for d in range(0, 91, 15)]
-            r_labels = [str(d) for d in range(0, 91, 15)]
+            r_ticks = [0.30, 0.5, 0.75, 1.0]
+            r_labels = ['15°', '30°', '45°', '90°']
             ax_stereo.set_rgrids(
                 r_ticks, labels=r_labels,
                 angle=135, fontsize=10
@@ -1460,7 +1459,6 @@ class ResultsVisualizer:
                 plt.close(fig)
 
     # 统一的分布图
-    # 统一的分布图
     def _PlotDistributionsSingle(
             self,
             out_dir: str,
@@ -1482,8 +1480,6 @@ class ResultsVisualizer:
                - 右纵轴: PDF曲线(密度)
             3) 右纵轴颜色与PDF曲线颜色一致;
             4) 总图宽高比接近2:1，适合A4文档。
-            5) 三个子图左纵轴的最大值统一为三个分布中柱状图 Count 的全局最大值，
-               保证纵向尺度一致，便于比较。
         """
 
         from scipy.stats import gaussian_kde
@@ -1507,7 +1503,7 @@ class ResultsVisualizer:
                 return
 
         with Timer(f"_PlotDistributionsSingle(base={base_name})", self.logger):
-            # ===== 1. 准备数据 =====
+            # 准备数据
             areas = df["Area"].to_numpy(dtype=float)
             trace_lengths = df["TraceLength"].to_numpy(dtype=float)
             roughness = df["Roughness"].to_numpy(dtype=float)
@@ -1517,62 +1513,8 @@ class ResultsVisualizer:
             trace_valid = trace_lengths[(trace_lengths > 0) & np.isfinite(trace_lengths)]
             rough_valid = roughness[np.isfinite(roughness)]
 
-            # ===== 2. 预先计算三个分布的柱状图最大值，用于统一左轴范围 =====
-            # 这里只用 np.histogram 计算 bin 统计，不作绘图
-            area_hist_max = 0
-            trace_hist_max = 0
-            rough_hist_max = 0
-
-            # 面积
-            if len(areas_valid) >= 5:
-                n_bins_area = min(20, max(10, int(len(areas_valid) / 15)))
-                area_counts, area_bin_edges = np.histogram(
-                    areas_valid, bins=n_bins_area
-                )
-                area_hist_max = int(area_counts.max())
-            else:
-                area_bin_edges = None  # 占位
-
-            # 迹长
-            if len(trace_valid) >= 5:
-                n_bins_trace = min(20, max(10, int(len(trace_valid) / 15)))
-                trace_counts, trace_bin_edges = np.histogram(
-                    trace_valid, bins=n_bins_trace
-                )
-                trace_hist_max = int(trace_counts.max())
-            else:
-                trace_bin_edges = None  # 占位
-
-            # 粗糙度 (统一使用 0–1 范围)
-            if len(rough_valid) >= 5:
-                x_min_rough, x_max_rough = 0.0, 1.0
-                n_bins_rough = 20
-                rough_counts, rough_bin_edges = np.histogram(
-                    rough_valid,
-                    bins=n_bins_rough,
-                    range=(x_min_rough, x_max_rough),
-                )
-                rough_hist_max = int(rough_counts.max())
-            else:
-                rough_bin_edges = None  # 占位
-                x_min_rough, x_max_rough = 0.0, 1.0
-
-            # 计算三个分布中的全局最大柱状数量，用作统一左轴上限
-            global_hist_max_candidates = [
-                v for v in [area_hist_max, trace_hist_max, rough_hist_max] if v > 0
-            ]
-            if len(global_hist_max_candidates) > 0:
-                global_hist_max = max(global_hist_max_candidates)
-                # 稍微放大一点，避免柱子顶在边框上
-                global_hist_ylim = global_hist_max * 1.1
-            else:
-                # 如果三者都没有有效数据，直接结束
-                self.logger.warning("三个分布均无足够有效数据，跳过绘图")
-                return
-
-            # ===== 3. 创建图形 =====
-            # 如果你觉得图整体“太高”，可以把高度从 6 调小一些，比如 5 或 4.5
-            fig = plt.figure(figsize=(17, 5), dpi=self.dpi)
+            # 创建图形，宽高比接近2:1 (A4文档比例)
+            fig = plt.figure(figsize=(17, 6), dpi=self.dpi)
 
             # 创建3个子图
             gs = gridspec.GridSpec(1, 3, wspace=0.5, hspace=0.3)
@@ -1581,286 +1523,203 @@ class ResultsVisualizer:
             hist_color = '#1f77b4'  # 柱状图颜色
             pdf_color = '#d62728'  # PDF曲线颜色
 
-            # ===== 4. 子图1: 面积分布 =====
+            # 子图1: 面积分布
             if len(areas_valid) >= 5:
                 ax1 = fig.add_subplot(gs[0, 0])
                 ax1_right = ax1.twinx()
 
-                # 使用预先计算好的 bin 边界，保证统计一致
-                n_bins_area = len(area_bin_edges) - 1
-                hist_area, _, _ = ax1.hist(
-                    areas_valid,
-                    bins=area_bin_edges,
-                    color=hist_color,
-                    alpha=0.7,
-                    edgecolor='black',
-                    linewidth=0.5,
-                    label='Count',
+                # 自适应直方图分箱
+                n_bins = min(20, max(10, int(len(areas_valid) / 15)))
+
+                # 绘制柱状图 (左纵轴)
+                hist, bins, _ = ax1.hist(
+                    areas_valid, bins=n_bins,
+                    color=hist_color, alpha=0.7,
+                    edgecolor='black', linewidth=0.5,
+                    label='Count'
                 )
 
                 # 计算KDE PDF (右纵轴)
                 try:
-                    kde_area = gaussian_kde(areas_valid)
-                    x_eval_area = np.linspace(area_bin_edges[0], area_bin_edges[-1], 300)
-                    pdf_area = kde_area(x_eval_area)
+                    kde = gaussian_kde(areas_valid)
+                    x_eval = np.linspace(bins[0], bins[-1], 300)
+                    pdf = kde(x_eval)
 
-                    ax1_right.plot(
-                        x_eval_area,
-                        pdf_area,
-                        '-',
-                        color=pdf_color,
-                        linewidth=2,
-                        label='PDF Density',
-                    )
+                    # 绘制PDF曲线 (右纵轴)
+                    ax1_right.plot(x_eval, pdf, '-', color=pdf_color,
+                                   linewidth=2, label='PDF Density')
                 except Exception as e:
                     self.logger.warning(f"面积KDE计算失败: {e}")
+                    pdf = np.zeros_like(x_eval)
 
-                # 左纵轴: 统一的 Count 最大值
-                ax1.set_ylim(0, global_hist_ylim)
+                # 设置左纵轴
                 ax1.set_xlabel('Area (m²)', fontsize=11, weight='bold')
-                ax1.set_ylabel(
-                    'Number of Discontinuities',
-                    fontsize=11,
-                    weight='bold',
-                    color=hist_color,
-                )
+                ax1.set_ylabel('Number of Discontinuities', fontsize=11,
+                               weight='bold', color=hist_color)
                 ax1.tick_params(axis='y', labelcolor=hist_color)
 
-                # 右纵轴: 仍然根据 PDF 自适应
-                ax1_right.set_ylabel(
-                    'Probability Density',
-                    fontsize=11,
-                    weight='bold',
-                    color=pdf_color,
-                )
+                # 设置右纵轴
+                ax1_right.set_ylabel('Probability Density', fontsize=11,
+                                     weight='bold', color=pdf_color)
                 ax1_right.tick_params(axis='y', labelcolor=pdf_color)
 
-                # x 轴范围
+                # 设置标题
+                ax1.set_title('(a) Area Distribution', fontsize=12, weight='bold', pad=10)
+
+                # 添加图例
+                lines1, labels1 = ax1.get_legend_handles_labels()
+                lines2, labels2 = ax1_right.get_legend_handles_labels()
+                ax1.legend(lines1 + lines2, labels1 + labels2,
+                           loc='upper right', fontsize=9)
+
+                # 自适应横坐标范围
                 x_min = np.min(areas_valid)
                 x_max = np.max(areas_valid)
                 x_range = x_max - x_min
                 ax1.set_xlim(max(0, x_min - 0.05 * x_range), x_max + 0.05 * x_range)
 
-                # 标题与图例
-                ax1.set_title(
-                    '(a) Area Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
-                lines1, labels1 = ax1.get_legend_handles_labels()
-                lines2, labels2 = ax1_right.get_legend_handles_labels()
-                ax1.legend(
-                    lines1 + lines2,
-                    labels1 + labels2,
-                    loc='upper right',
-                    fontsize=9,
-                )
-
+                # 网格
                 ax1.grid(True, alpha=0.3, linestyle='--')
+
             else:
                 ax1 = fig.add_subplot(gs[0, 0])
-                ax1.text(
-                    0.5,
-                    0.5,
-                    'Insufficient Area Data',
-                    ha='center',
-                    va='center',
-                    fontsize=12,
-                )
-                ax1.set_title(
-                    '(a) Area Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
+                ax1.text(0.5, 0.5, 'Insufficient Area Data',
+                         ha='center', va='center', fontsize=12)
+                ax1.set_title('(a) Area Distribution', fontsize=12, weight='bold', pad=10)
 
-            # ===== 5. 子图2: 迹长分布 =====
+            # 子图2: 迹长分布
             if len(trace_valid) >= 5:
                 ax2 = fig.add_subplot(gs[0, 1])
                 ax2_right = ax2.twinx()
 
-                n_bins_trace = len(trace_bin_edges) - 1
-                hist_trace, _, _ = ax2.hist(
-                    trace_valid,
-                    bins=trace_bin_edges,
-                    color=hist_color,
-                    alpha=0.7,
-                    edgecolor='black',
-                    linewidth=0.5,
-                    label='Count',
+                # 自适应直方图分箱
+                n_bins = min(20, max(10, int(len(trace_valid) / 15)))
+
+                # 绘制柱状图 (左纵轴)
+                hist, bins, _ = ax2.hist(
+                    trace_valid, bins=n_bins,
+                    color=hist_color, alpha=0.7,
+                    edgecolor='black', linewidth=0.5,
+                    label='Count'
                 )
 
+                # 计算KDE PDF (右纵轴)
                 try:
-                    kde_trace = gaussian_kde(trace_valid)
-                    x_eval_trace = np.linspace(trace_bin_edges[0], trace_bin_edges[-1], 300)
-                    pdf_trace = kde_trace(x_eval_trace)
+                    kde = gaussian_kde(trace_valid)
+                    x_eval = np.linspace(bins[0], bins[-1], 300)
+                    pdf = kde(x_eval)
 
-                    ax2_right.plot(
-                        x_eval_trace,
-                        pdf_trace,
-                        '-',
-                        color=pdf_color,
-                        linewidth=2,
-                        label='PDF Density',
-                    )
+                    # 绘制PDF曲线 (右纵轴)
+                    ax2_right.plot(x_eval, pdf, '-', color=pdf_color,
+                                   linewidth=2, label='PDF Density')
                 except Exception as e:
                     self.logger.warning(f"迹长KDE计算失败: {e}")
+                    pdf = np.zeros_like(x_eval)
 
-                # 左轴统一上限
-                ax2.set_ylim(0, global_hist_ylim)
+                # 设置左纵轴
                 ax2.set_xlabel('Trace Length (m)', fontsize=11, weight='bold')
-                ax2.set_ylabel(
-                    'Number of Discontinuities',
-                    fontsize=11,
-                    weight='bold',
-                    color=hist_color,
-                )
+                ax2.set_ylabel('Number of Discontinuities', fontsize=11,
+                               weight='bold', color=hist_color)
                 ax2.tick_params(axis='y', labelcolor=hist_color)
 
-                ax2_right.set_ylabel(
-                    'Probability Density',
-                    fontsize=11,
-                    weight='bold',
-                    color=pdf_color,
-                )
+                # 设置右纵轴
+                ax2_right.set_ylabel('Probability Density', fontsize=11,
+                                     weight='bold', color=pdf_color)
                 ax2_right.tick_params(axis='y', labelcolor=pdf_color)
 
+                # 设置标题
+                ax2.set_title('(b) Trace Length Distribution', fontsize=12, weight='bold', pad=10)
+
+                # 添加图例
+                lines1, labels1 = ax2.get_legend_handles_labels()
+                lines2, labels2 = ax2_right.get_legend_handles_labels()
+                ax2.legend(lines1 + lines2, labels1 + labels2,
+                           loc='upper right', fontsize=9)
+
+                # 自适应横坐标范围
                 x_min = np.min(trace_valid)
                 x_max = np.max(trace_valid)
                 x_range = x_max - x_min
                 ax2.set_xlim(max(0, x_min - 0.05 * x_range), x_max + 0.05 * x_range)
 
-                ax2.set_title(
-                    '(b) Trace Length Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
-                lines1, labels1 = ax2.get_legend_handles_labels()
-                lines2, labels2 = ax2_right.get_legend_handles_labels()
-                ax2.legend(
-                    lines1 + lines2,
-                    labels1 + labels2,
-                    loc='upper right',
-                    fontsize=9,
-                )
-
+                # 网格
                 ax2.grid(True, alpha=0.3, linestyle='--')
+
             else:
                 ax2 = fig.add_subplot(gs[0, 1])
-                ax2.text(
-                    0.5,
-                    0.5,
-                    'Insufficient Trace Length Data',
-                    ha='center',
-                    va='center',
-                    fontsize=12,
-                )
-                ax2.set_title(
-                    '(b) Trace Length Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
+                ax2.text(0.5, 0.5, 'Insufficient Trace Length Data',
+                         ha='center', va='center', fontsize=12)
+                ax2.set_title('(b) Trace Length Distribution', fontsize=12, weight='bold', pad=10)
 
-            # ===== 6. 子图3: 粗糙度分布 =====
+            # 子图3: 粗糙度分布
             if len(rough_valid) >= 5:
                 ax3 = fig.add_subplot(gs[0, 2])
                 ax3_right = ax3.twinx()
 
-                n_bins_rough = len(rough_bin_edges) - 1
-                hist_rough, _, _ = ax3.hist(
-                    rough_valid,
-                    bins=rough_bin_edges,
-                    range=(x_min_rough, x_max_rough),
-                    color=hist_color,
-                    alpha=0.7,
-                    edgecolor='black',
-                    linewidth=0.5,
-                    label='Count',
+                # 使用统一横坐标范围 (0-1)
+                x_min, x_max = 0, 1.0
+                n_bins = 20
+
+                # 绘制柱状图 (左纵轴)
+                hist, bins, _ = ax3.hist(
+                    rough_valid, bins=n_bins,
+                    range=(x_min, x_max),
+                    color=hist_color, alpha=0.7,
+                    edgecolor='black', linewidth=0.5,
+                    label='Count'
                 )
 
+                # 计算KDE PDF (右纵轴)
                 try:
-                    kde_rough = gaussian_kde(rough_valid)
-                    x_eval_rough = np.linspace(x_min_rough, x_max_rough, 300)
-                    pdf_rough = kde_rough(x_eval_rough)
+                    kde = gaussian_kde(rough_valid)
+                    x_eval = np.linspace(x_min, x_max, 300)
+                    pdf = kde(x_eval)
 
-                    ax3_right.plot(
-                        x_eval_rough,
-                        pdf_rough,
-                        '-',
-                        color=pdf_color,
-                        linewidth=2,
-                        label='PDF Density',
-                    )
+                    # 绘制PDF曲线 (右纵轴)
+                    ax3_right.plot(x_eval, pdf, '-', color=pdf_color,
+                                   linewidth=2, label='PDF Density')
                 except Exception as e:
                     self.logger.warning(f"粗糙度KDE计算失败: {e}")
+                    pdf = np.zeros_like(x_eval)
 
-                # 左轴统一上限
-                ax3.set_ylim(0, global_hist_ylim)
+                # 设置左纵轴
                 ax3.set_xlabel('Roughness', fontsize=11, weight='bold')
-                ax3.set_ylabel(
-                    'Number of Discontinuities',
-                    fontsize=11,
-                    weight='bold',
-                    color=hist_color,
-                )
+                ax3.set_ylabel('Number of Discontinuities', fontsize=11,
+                               weight='bold', color=hist_color)
                 ax3.tick_params(axis='y', labelcolor=hist_color)
 
-                ax3_right.set_ylabel(
-                    'Probability Density',
-                    fontsize=11,
-                    weight='bold',
-                    color=pdf_color,
-                )
+                # 设置右纵轴
+                ax3_right.set_ylabel('Probability Density', fontsize=11,
+                                     weight='bold', color=pdf_color)
                 ax3_right.tick_params(axis='y', labelcolor=pdf_color)
 
-                ax3.set_xlim(x_min_rough, x_max_rough)
+                # 设置标题
+                ax3.set_title('(c) Roughness Distribution', fontsize=12, weight='bold', pad=10)
 
-                ax3.set_title(
-                    '(c) Roughness Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
+                # 添加图例
                 lines1, labels1 = ax3.get_legend_handles_labels()
                 lines2, labels2 = ax3_right.get_legend_handles_labels()
-                ax3.legend(
-                    lines1 + lines2,
-                    labels1 + labels2,
-                    loc='upper right',
-                    fontsize=9,
-                )
+                ax3.legend(lines1 + lines2, labels1 + labels2,
+                           loc='upper right', fontsize=9)
 
+                # 设置横坐标范围
+                ax3.set_xlim(x_min, x_max)
+
+                # 网格
                 ax3.grid(True, alpha=0.3, linestyle='--')
+
             else:
                 ax3 = fig.add_subplot(gs[0, 2])
-                ax3.text(
-                    0.5,
-                    0.5,
-                    'Insufficient Roughness Data',
-                    ha='center',
-                    va='center',
-                    fontsize=12,
-                )
-                ax3.set_title(
-                    '(c) Roughness Distribution',
-                    fontsize=12,
-                    weight='bold',
-                    pad=10,
-                )
+                ax3.text(0.5, 0.5, 'Insufficient Roughness Data',
+                         ha='center', va='center', fontsize=12)
+                ax3.set_title('(c) Roughness Distribution', fontsize=12, weight='bold', pad=10)
 
-            # # ===== 7. 总标题与布局 =====
-            # fig.suptitle(
-            #     f'Statistical Distributions of Discontinuities\n({base_name})',
-            #     fontsize=14,
-            #     weight='bold',
-            #     y=0.98,
-            # )
-            #
-            # # 为总标题留出空间
-            # fig.tight_layout(rect=[0, 0, 1, 0.95])
+            # 设置总标题
+            fig.suptitle(f'Statistical Distributions of Discontinuities\n({base_name})',
+                         fontsize=14, weight='bold', y=0.98)
+
+            # 调整布局
+            fig.tight_layout(rect=[0, 0, 1, 0.95])  # 为总标题留出空间
 
             # 保存图像
             self._SaveFigure(
@@ -1870,7 +1729,7 @@ class ResultsVisualizer:
                 base_name=base_name,
                 plot_short_name=plot_short_name,
                 output_formats=output_formats,
-                logger=self.logger,
+                logger=self.logger
             )
 
             if show:
@@ -1890,55 +1749,14 @@ class ResultsVisualizer:
     ) -> None:
         """
         功能简介:
-            使用 mplstereonet 绘制优势结构面簇与整体坡面的极射赤平投影图
-            （等角 Wulff 网，符合岩体工程中结构面–坡面关系分析的常用范式）。
-            各优势结构面以小圆 + 极点表示，整体坡面以红色小圆 + 星形极点表示。
-
-        实现思路(概要):
-            1. 读取聚类结果 CSV: <base_name>_clusters.csv，获取每个优势结构面的
-               倾角(dip) 与倾向(dipdir)。
-               - 若同一 Cluster_id 有多行，则对 dip / dipdir 取平均，得到代表性产状。
-            2. 读取点云 point_path，采用 PCA 估计整体坡面法向量，并转换为 dip / dipdir。
-            3. 将 dipdir/dip 转换为 mplstereonet 所需的 strike/dip 表达:
-               strike = (dipdir - 90) % 360 (右手定则)。
-            4. 使用 projection='equal_angle_stereonet' 创建等角立体网，
-               对每个优势结构面绘制:
-               - 平面小圆: ax.plane(strike, dip)
-               - 极点:     ax.pole(strike, dip)
-               - 在极点附近用较大的字体标注“dip/dipdir”。
-            5. 对整体坡面同样绘制小圆与极点，并用红色高亮 + 星形标记。
-            6. 设置方位刻度为 N, E, S, W 等，并适当放大香标和标题字体，使插入 A4 Word 后仍易于阅读。
-
-        输入:
-            out_dir: str
-                当前结果输出目录。
-            point_path: str
-                点云文件路径，用于估计整体坡面。
-            base_name: str
-                基础文件名(不含扩展名)，用于组合输出文件名。
-            plot_short_name: str
-                图件短名称(用于文件名后缀)。
-            output_formats: Sequence[str]
-                图件导出的格式列表，例如 ['.png', '.pdf']。
-            show: bool
-                是否在屏幕上显示图像，True 则调用 plt.show()，否则直接关闭。
-
-        输出:
-            无直接返回值。函数在 out_dir 中生成 slope_cluster_stereonet 图件文件。
+            绘制优势结构面+整体坡面的上半球极射赤平投影关系图。
+            聚类产状用弧线表示，用于分析优势产状与坡面的几何关系。
         """
-        # 尝试导入 mplstereonet
-        try:
-            import mplstereonet
-        except ImportError as e:
-            self.logger.warning(
-                f"绘制 slope_cluster_stereonet 失败: 未安装 mplstereonet, 错误: {e}"
-            )
-            return
 
-        # 统一字体为 Times New Roman（与项目其它图件保持一致）
+        # 设置全局字体为Times New Roman
         mpl.rcParams["font.family"] = self.font_family
 
-        # 读取聚类 CSV
+        # 读取聚类CSV
         clusters_csv_path = os.path.join(out_dir, f"{base_name}_clusters.csv")
         if not os.path.isfile(clusters_csv_path):
             self.logger.warning(f"未找到聚类 CSV: {clusters_csv_path}")
@@ -1950,133 +1768,134 @@ class ResultsVisualizer:
             self.logger.warning(f"读取聚类 CSV 失败: {clusters_csv_path}, 错误: {e}")
             return
 
-        # 必要字段检查
-        required_cols = ["Cluster_id", "Dip", "Dipdir"]
-        for col in required_cols:
-            if col not in clusters_df.columns:
-                self.logger.warning(f"聚类 CSV 缺少必要列 '{col}'，跳过绘制 slope_cluster_stereonet")
-                return
-
-        # 将同一 Cluster_id 的 dip/dipdir 聚合（防止一个簇多行重复）
-        grouped = clusters_df.groupby("Cluster_id", as_index=False).agg({
-            "Dip": "mean",
-            "Dipdir": "mean"
-        })
-
-        if len(grouped) == 0:
-            self.logger.warning("聚类 CSV 中无有效聚类记录，跳过绘制 slope_cluster_stereonet")
-            return
-
-        # 辅助函数: dipdir/dip -> strike/dip (mplstereonet 使用的定义)
-        def _DipdirToStrike(dipdir_deg: float, dip_deg: float) -> Tuple[float, float]:
-            """
-            将倾向/倾角转换为走向/倾角 (右手定则):
-                strike = (dipdir - 90) % 360
-            """
-            strike_deg = (dipdir_deg - 90.0) % 360.0
-            return strike_deg, dip_deg
-
         with Timer(f"_PlotSlopeClusterStereonetSingle(base={base_name})", self.logger):
-            # 创建等角(极射)立体网，尺寸稍大，便于 Word 中查看
-            fig = plt.figure(figsize=(9.5, 9.5), dpi=self.dpi)
-            ax = fig.add_subplot(111, projection='equal_angle_stereonet')
+            fig, ax = plt.subplots(figsize=(10, 10), dpi=self.dpi, subplot_kw=dict(projection='polar'))
 
-            # 设置网格与基本样式
-            ax.grid(True, color='0.75', linewidth=0.8, linestyle='--')
-            ax.set_title(
-                f"Relationship between Dominant Discontinuities and Overall Slope\n({base_name})",
-                fontsize=13,
-                weight='bold',
-                pad=20
-            )
+            # 设置 stereonet 参数
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(-1)
+            ax.set_rlim(0, 1)
 
-            # 设置方位角刻度: N, 30°, 60°, E, ...
-            azimuths = np.arange(0, 360, 30)
-            az_labels = ['N', '30°', '60°', 'E', '120°', '150°',
-                         'S', '210°', '240°', 'W', '300°', '330°']
-            ax.set_azimuth_ticks(azimuths, labels=az_labels, frac=1.05, fontsize=11, fontweight='bold')
+            # 辅助函数: 倾角转半径
+            def stereographic_r_from_dip(dip_deg):
+                return np.tan(np.radians(dip_deg) / 2.0)
 
-            # ------ 1) 绘制优势结构面簇 ------
-            cluster_ids = grouped["Cluster_id"].to_numpy()
-            num_clusters = len(cluster_ids)
+            # 辅助函数: 绘制平面弧线
+            def plot_plane_great_circle(ax, dip_deg, dipdir_deg, color='blue', alpha=0.7, label=None):
+                """
+                在 stereonet 上绘制平面的弧线。
+                参数:
+                    dip_deg: 倾角
+                    dipdir_deg: 倾向
+                    color: 弧线颜色
+                    alpha: 透明度
+                    label: 图例标签
+                """
+                # 生成弧线点
+                n_points = 180
+                phi = np.radians(dipdir_deg)
+                delta = np.radians(dip_deg)
 
-            # 为每个簇分配颜色
-            colors = plt.cm.tab10(np.linspace(0, 1, max(2, num_clusters)))
+                # 计算弧线在 stereonet 上的点
+                # 对于 stereonet 投影，平面的轨迹是一个小圆
+                t = np.linspace(0, 2 * np.pi, n_points)
 
-            legend_handles = []
-            legend_labels = []
+                # 计算小圆的半径和中心
+                # 倾角转换为 stereonet 上的位置
+                r0 = stereographic_r_from_dip(dip_deg)
+                theta0 = np.radians(dipdir_deg)
 
-            for idx, row in grouped.iterrows():
-                cluster_id = int(row["Cluster_id"])
-                dip_deg = float(row["Dip"])
-                dipdir_deg = float(row["Dipdir"])
+                # 计算小圆上各点的极角
+                # 对于 stereonet，平面的轨迹是一个以(theta0, r0)为中心的圆
+                # 简化：绘制一个通过极点的小圆
+                if dip_deg > 0:
+                    # 倾角大于0，绘制一个小圆
+                    k = 2 * np.tan(np.radians(dip_deg) / 2)
+                    r_circle = k / (1 + np.cos(t))
+                    theta_circle = t + np.radians(dipdir_deg) - np.pi / 2
 
-                # 转换为 strike/dip
-                strike_deg, dip_for_plane = _DipdirToStrike(dipdir_deg, dip_deg)
+                    # 转换为直角坐标并过滤
+                    x_circle = r_circle * np.cos(theta_circle)
+                    y_circle = r_circle * np.sin(theta_circle)
 
-                # 平面小圆
-                plane_line, = ax.plane(
-                    strike_deg,
-                    dip_for_plane,
-                    color=colors[idx % len(colors)],
-                    linewidth=1.8,
-                    alpha=0.85,
-                    zorder=2
-                )
+                    # 只保留在单位圆内的点
+                    mask = (x_circle ** 2 + y_circle ** 2) <= 1
+                    if np.any(mask):
+                        # 绘制弧线
+                        ax.plot(theta_circle[mask], r_circle[mask],
+                                color=color, linewidth=1.5, alpha=alpha, label=label)
+                else:
+                    # 水平面，绘制一个通过中心的圆
+                    circle = plt.Circle((theta0, 0), r0, transform=ax.transData._b,
+                                        fill=False, color=color, linewidth=1.5, alpha=alpha)
+                    ax.add_artist(circle)
 
-                # 极点
-                pole_lon, pole_lat = mplstereonet.pole(strike_deg, dip_for_plane)
-                ax.pole(
-                    strike_deg,
-                    dip_for_plane,
-                    marker='o',
-                    markersize=8,
-                    color=colors[idx % len(colors)],
-                    markeredgecolor='k',
-                    linewidth=0.8,
-                    zorder=4
-                )
+            # 1) 绘制聚类产状弧线
+            if len(clusters_df) > 0:
+                # 为每个聚类分配颜色
+                colors = plt.cm.tab20(np.linspace(0, 1, len(clusters_df)))
 
-                # 在极点附近添加 dip/dipdir 标注（字体略大）
-                ax.text(
-                    pole_lon,
-                    pole_lat + np.radians(3.0),  # 轻微向外偏移，避免与点重合
-                    f"{dip_deg:.1f}°/{dipdir_deg:.1f}°",
-                    fontsize=11,
-                    color=colors[idx % len(colors)],
-                    weight='bold',
-                    ha='left',
-                    va='bottom',
-                    zorder=5
-                )
+                for idx, row in clusters_df.iterrows():
+                    cluster_id = int(row["Cluster_id"])
+                    dip = float(row["Dip"])
+                    dipdir = float(row["Dipdir"])
 
-                # 图例信息（每个簇只添加一次）
-                legend_handles.append(plane_line)
-                legend_labels.append(f"Cluster {cluster_id}")
+                    # 绘制平面弧线
+                    plot_plane_great_circle(
+                        ax, dip, dipdir,
+                        color=colors[idx], alpha=0.6,
+                        label=f'Cluster {cluster_id}'
+                    )
 
-            # ------ 2) 估计并绘制整体坡面 ------
-            slope_strike = None
-            slope_dip = None
-            slope_dipdir = None
+                    # 标记聚类中心点（可选，用小点表示）
+                    r_center = stereographic_r_from_dip(dip)
+                    theta_center = np.radians(dipdir)
+                    ax.scatter(
+                        theta_center, r_center,
+                        s=30, alpha=1.0,
+                        color=colors[idx],
+                        edgecolors='k', linewidth=0.8,
+                        marker='o',
+                        zorder=5
+                    )
 
+                    # 添加聚类产状标注
+                    ax.annotate(
+                        f'{dip:.1f}°/{dipdir:.1f}°',
+                        xy=(theta_center, r_center),
+                        xytext=(theta_center + 0.15, r_center + 0.05),
+                        textcoords='data',
+                        fontsize=9,
+                        weight='bold',
+                        color=colors[idx],
+                        arrowprops=dict(
+                            arrowstyle='->',
+                            color=colors[idx],
+                            lw=1.0,
+                            alpha=0.7
+                        ),
+                        zorder=6
+                    )
+
+            # 2) 绘制整体坡面弧线
             try:
                 # 估计整体坡面
                 import open3d as o3d
-                from scipy.spatial import ConvexHull  # 目前未直接使用，保留以便后续扩展
+                from scipy.spatial import ConvexHull
 
                 # 读取点云
                 pcd = o3d.io.read_point_cloud(point_path)
                 points = np.asarray(pcd.points)
 
                 if len(points) >= 3:
-                    # 使用 PCA 估计主要坡面法向量
+                    # 使用 PCA 估计主要坡面
                     centroid = np.mean(points, axis=0)
                     points_centered = points - centroid
 
-                    # 协方差矩阵
+                    # 计算协方差矩阵
                     cov_matrix = np.cov(points_centered.T)
 
-                    # 特征值与特征向量
+                    # 计算特征值和特征向量
                     eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
 
                     # 最小特征值对应的特征向量为坡面法向量
@@ -2086,79 +1905,98 @@ class ResultsVisualizer:
                     if slope_normal[2] < 0:
                         slope_normal = -slope_normal
 
-                    # 计算倾角 (与竖直方向夹角)
-                    vertical = np.array([0.0, 0.0, 1.0])
+                    # 计算倾角/倾向
+                    vertical = np.array([0, 0, 1])
                     dip_rad = np.arccos(np.clip(np.dot(slope_normal, vertical), -1.0, 1.0))
-                    slope_dip = float(np.degrees(dip_rad))
+                    dip_deg = np.degrees(dip_rad)
 
-                    # 计算倾向 (水平投影的方位角)
-                    horizontal_proj = np.array([slope_normal[0], slope_normal[1], 0.0])
+                    # 倾向
+                    horizontal_proj = np.array([slope_normal[0], slope_normal[1], 0])
                     if np.linalg.norm(horizontal_proj) > 1e-6:
                         horizontal_proj = horizontal_proj / np.linalg.norm(horizontal_proj)
-                        dipdir_rad = np.arctan2(horizontal_proj[0], horizontal_proj[1])
-                        slope_dipdir = float((np.degrees(dipdir_rad) + 360.0) % 360.0)
+                        dipdir_deg = np.degrees(np.arctan2(horizontal_proj[0], horizontal_proj[1]))
+                        dipdir_deg = (dipdir_deg + 360) % 360
                     else:
-                        slope_dipdir = 0.0
+                        dipdir_deg = 0
 
-                    # 转换为 strike/dip
-                    slope_strike, slope_dip = _DipdirToStrike(slope_dipdir, slope_dip)
-
-                    # 绘制坡面平面
-                    slope_line, = ax.plane(
-                        slope_strike,
-                        slope_dip,
-                        color='red',
-                        linewidth=2.5,
-                        alpha=0.95,
-                        zorder=3
+                    # 绘制坡面弧线（用粗线表示）
+                    plot_plane_great_circle(
+                        ax, dip_deg, dipdir_deg,
+                        color='red', alpha=0.9,
+                        label='Overall Slope'
                     )
 
-                    # 坡面极点（用星形标出）
-                    slope_lon, slope_lat = mplstereonet.pole(slope_strike, slope_dip)
-                    ax.pole(
-                        slope_strike,
-                        slope_dip,
+                    # 标记坡面极点
+                    r_slope = stereographic_r_from_dip(dip_deg)
+                    theta_slope = np.radians(dipdir_deg)
+                    ax.scatter(
+                        theta_slope, r_slope,
+                        s=80, alpha=1.0,
+                        color='red',
+                        edgecolors='darkred', linewidth=1.5,
                         marker='*',
-                        markersize=12,
-                        color='red',
-                        markeredgecolor='k',
-                        linewidth=1.0,
-                        zorder=6
-                    )
-
-                    # 坡面文字标注（字体再大一点）
-                    ax.text(
-                        slope_lon,
-                        slope_lat + np.radians(5.0),
-                        f"Slope: {slope_dip:.1f}°/{slope_dipdir:.1f}°",
-                        fontsize=12,
-                        color='red',
-                        weight='bold',
-                        ha='left',
-                        va='bottom',
                         zorder=7
                     )
 
-                    legend_handles.append(slope_line)
-                    legend_labels.append("Overall Slope")
+                    # 添加坡面产状标注
+                    ax.annotate(
+                        f'Slope: {dip_deg:.1f}°/{dipdir_deg:.1f}°',
+                        xy=(theta_slope, r_slope),
+                        xytext=(theta_slope + 0.3, r_slope + 0.1),
+                        textcoords='data',
+                        fontsize=10,
+                        weight='bold',
+                        color='red',
+                        arrowprops=dict(
+                            arrowstyle='->',
+                            color='red',
+                            lw=1.5
+                        ),
+                        zorder=8
+                    )
 
             except Exception as e:
                 self.logger.warning(f"估计整体坡面失败: {e}")
-                # 若整体坡面估计失败，只绘制结构面簇
+                # 如果不成功，不绘制坡面
 
-            # ------ 3) 图例与布局、保存 ------
-            if len(legend_handles) > 0:
-                ax.legend(
-                    legend_handles,
-                    legend_labels,
-                    loc='lower left',
-                    fontsize=11,
-                    frameon=True,
-                    framealpha=0.9
-                )
+            # 设置 stereonet 网格和标签
+            ax.set_thetagrids(
+                np.arange(0, 360, 30),
+                labels=['N', '30°', '60°', 'E', '120°', '150°',
+                        'S', '210°', '240°', 'W', '300°', '330°'],
+                fontsize=10
+            )
 
-            # 适当收紧边距，兼顾标题与图例
-            fig.tight_layout(rect=[0.02, 0.02, 0.98, 0.95])
+            # 设置半径网格和标签
+            r_ticks = [0.25, 0.5, 0.75, 1.0]
+            r_labels = ['15°', '30°', '45°', '60°']
+            ax.set_rgrids(
+                r_ticks, labels=r_labels,
+                angle=135, fontsize=10
+            )
+
+            # 设置标题
+            ax.set_title(
+                f'Relationship between Dominant Discontinuities and Overall Slope\n({base_name})',
+                fontsize=13, weight='bold', pad=20
+            )
+
+            # 添加图例
+            ax.legend(
+                loc='upper left',
+                bbox_to_anchor=(1.05, 1.0),
+                fontsize=10,
+                frameon=True,
+                fancybox=True,
+                shadow=True,
+                title='Discontinuity Clusters'
+            )
+
+            # 添加网格线
+            ax.grid(True, alpha=0.3, linestyle='-')
+
+            # 调整布局
+            fig.tight_layout()
 
             # 保存图像
             self._SaveFigure(

@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .algorithms.base import PlaneClusterInfo
 from .geometry import Discontinuity, Plane
 from .logging_utils import LoggerManager, Timer
 from .pointcloud import PointCloud
@@ -62,18 +61,26 @@ class ResultsExporter:
             self,
             point_cloud: PointCloud,
             discontinuities: List[Discontinuity],
-            clusters=List[PlaneClusterInfo],
+            cluster_labels: Optional[np.ndarray] = None,
             algorithm_name: str = ""
     ):
         self.logger = LoggerManager.GetLogger(self.__class__.__name__)
         self.point_cloud = point_cloud
         self.discontinuities = discontinuities
-        self.clusters = clusters
         self.algorithm_name = algorithm_name if algorithm_name else "UnknownAlgo"
+
         num_points = len(self.point_cloud.points)
+        if cluster_labels is not None and cluster_labels.shape[0] != num_points:
+            raise ValueError(
+                f"cluster_labels 长度({cluster_labels.shape[0]})"
+                f"与点云点数({num_points})不一致。"
+            )
+        self.cluster_labels = cluster_labels
+
         self.logger.info(
             f"ResultsExporter 初始化: N_points={num_points}, "
             f"N_discontinuities={len(discontinuities)}, "
+            f"has_cluster_labels={cluster_labels is not None}"
         )
 
     # ---------------------------------------------------------
@@ -89,7 +96,6 @@ class ResultsExporter:
             一次性导出三类结果文件:
                 - 点级 CSV: <basename>_points.csv
                 - 结构面级 CSV: <basename>_discontinuitys.csv
-                - 聚类级 CSV: <basename>_clusters.csv
                 - 多边形 PLY: <basename>_polygons.ply
                 - 每个结构面的独立 CSV/PLY 文件夹: <basename>_discontinuitys/
 
@@ -100,13 +106,11 @@ class ResultsExporter:
             3) 在子目录中组合三个主文件路径:
                - basename_points.csv
                - basename_discontinuitys.csv
-               - basename_clusters.csv
                - basename_polygons.ply
                以及子文件夹:
                - basename_discontinuitys/
             4) 分别调用 ExportPointLevelCsv / ExportDiscontinuityLevelCsv /
-               ExportClusterLevelCsv / ExportDiscontinuityPolygonsToPly /
-               ExportPerDiscontinuityFiles;
+               ExportDiscontinuityPolygonsToPly / ExportPerDiscontinuityFiles;
             5) 返回包含输出路径信息的字典, 便于上层记录或打印.
 
         输入:
@@ -117,7 +121,7 @@ class ResultsExporter:
 
         输出:
             paths: Dict[str, str]
-                包含 "dir", "points_csv", "disc_csv", "clusters_csv", "polygons_ply",
+                包含 "dir", "points_csv", "disc_csv", "polygons_ply",
                 "discontinuity_dir", "point_cloud_path".
         """
         base_name = os.path.splitext(os.path.basename(point_cloud_path))[0]
@@ -125,7 +129,6 @@ class ResultsExporter:
 
         points_csv = os.path.join(out_dir, f"{base_name}_points.csv")
         disc_csv = os.path.join(out_dir, f"{base_name}_discontinuitys.csv")
-        clusters_csv = os.path.join(out_dir, f"{base_name}_clusters.csv")
         polygons_ply = os.path.join(out_dir, f"{base_name}_polygons.ply")
 
         # 单结构面文件夹
@@ -134,7 +137,6 @@ class ResultsExporter:
 
         self.ExportPointLevelCsv(points_csv)
         self.ExportDiscontinuityLevelCsv(disc_csv)
-        self.ExportClusterLevelCsv(clusters_csv)
         self.ExportDiscontinuityPolygonsToPly(polygons_ply)
         self.ExportPerDiscontinuityFiles(discon_dir, base_name)
 
@@ -142,7 +144,6 @@ class ResultsExporter:
             "dir": out_dir,
             "points_csv": points_csv,
             "disc_csv": disc_csv,
-            "clusters_csv": clusters_csv,
             "polygons_ply": polygons_ply,
             "discontinuity_dir": discon_dir,
             "point_cloud_path": point_cloud_path,
@@ -231,13 +232,19 @@ class ResultsExporter:
                             g_val = getattr(p, "g", 0)
                             b_val = getattr(p, "b", 0)
 
+                            # cluster_id: 优先使用外部 cluster_labels
+                            if self.cluster_labels is not None:
+                                cluster_id = int(self.cluster_labels[pt_idx])
+                            else:
+                                cluster_id = disc_cluster_id if disc_cluster_id != -1 else -1
+
                             writer.writerow([
                                 x, y, z,
                                 nx, ny, nz,
                                 r_val, g_val, b_val,
                                 dr, dg, db,
                                 disc_id,
-                                disc.cluster_id,
+                                cluster_id,
                                 seg_id,
                                 A, B, C, D,
                                 rms,
@@ -354,138 +361,6 @@ class ResultsExporter:
 
             self.logger.info(
                 f"结构面级 CSV 导出完成: {csv_path}, 共写入 {count_rows} 行."
-            )
-
-    # ---------------------------------------------------------
-    # 添加聚类级CSV导出方法
-    # ---------------------------------------------------------
-    def ExportClusterLevelCsv(self, csv_path: str) -> None:
-        """
-        功能简介:
-            导出聚类级 CSV 文件, 每一行代表一个聚类簇,
-            包含簇ID、平均倾角/倾向、结构面数量等信息.
-
-        实现思路:
-            1) 从 discontinuities 中提取所有有效聚类(cluster_id >= 0);
-            2) 按 cluster_id 分组, 统计每个簇的结构面数量;
-            3) 对每个簇, 计算面积加权平均倾角/倾向;
-            4) 写入 CSV 行: [Cluster_id, Dip, Dipdir, Discontinuity_Number].
-
-        输入:
-            csv_path: str
-                输出 CSV 文件路径.
-
-        输出:
-            无, 但在 csv_path 生成聚类级结果文件.
-        """
-        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-
-        with Timer(f"ExportClusterLevelCsv({os.path.basename(csv_path)})", self.logger):
-            # # 收集所有有效聚类信息
-            # clusters_dict = {}
-            #
-            # for disc in self.discontinuities:
-            #     cluster_id = getattr(disc, "cluster_id", -1)
-            #     if cluster_id < 0:
-            #         continue
-            #
-            #     if cluster_id not in clusters_dict:
-            #         clusters_dict[cluster_id] = {
-            #             "dip_list": [],
-            #             "dipdir_list": [],
-            #             "area_list": [],
-            #             "count": 0
-            #         }
-            #
-            #     clusters_dict[cluster_id]["dip_list"].append(disc.dip)
-            #     clusters_dict[cluster_id]["dipdir_list"].append(disc.dip_direction)
-            #     clusters_dict[cluster_id]["area_list"].append(getattr(disc, "area", 0.0))
-            #     clusters_dict[cluster_id]["count"] += 1
-            #
-            # if not clusters_dict:
-            #     self.logger.warning(f"没有有效的聚类数据, 跳过聚类CSV导出: {csv_path}")
-            #     return
-
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                # 表头
-                writer.writerow([
-                    "Cluster_id",
-                    "Dip",
-                    "Dipdir",
-                    "Discontinuity_Number",
-                    "confidence",
-                    "is_manual_seed",
-                ])
-                """ 关于confidence的计算
-                # 使用 α_i * μ_max_i 计算加权平均置信度
-                alpha_k = alpha[idx_k]
-                mu_max_k = membership_max[idx_k]
-                num = float(np.sum(alpha_k * mu_max_k))
-                den = float(np.sum(alpha_k)) if np.sum(alpha_k) > 1e-12 else 1.0
-                conf_k = num / den
-                cluster_conf[k] = conf_k
-                """
-
-                for cluster_info in self.clusters:
-                    cluster_id = cluster_info.cluster_id
-                    center_normal = cluster_info.center_normal
-                    num_members = cluster_info.num_members
-                    confidence = cluster_info.confidence
-                    is_manual_seed = cluster_info.is_manual_seed
-
-                    # 将一个 3D 上半球法向量 (nx, ny, nz) 转换为地质学中的倾角 (dip) 与倾向 (dip direction, dipdir)，单位为度。
-                    n = center_normal / np.linalg.norm(center_normal)
-                    nx, ny, nz = float(n[0]), float(n[1]), float(n[2])
-
-                    # ---------- 步骤3: 计算倾角 dip ----------
-                    # 数值安全: 限制 nz 在 [-1, 1] 范围内, 避免浮点误差导致 arccos 域错误
-                    nz_clamped = max(-1.0, min(1.0, nz))
-                    dip_rad = np.arccos(nz_clamped)
-                    dip_deg = np.degrees(dip_rad)
-
-                    # ---------- 步骤4: 计算最大下倾方向 -> 倾向 dipdir ----------
-                    dipdir_rad = np.arctan2(nx, ny)
-                    dipdir_deg = np.degrees(dipdir_rad)
-                    # 将方位角归一到 [0, 360)
-                    dipdir_deg = np.where(dipdir_deg < 0.0, dipdir_deg + 360.0, dipdir_deg)
-
-                    writer.writerow([
-                        cluster_id,
-                        f"{dip_deg:.2f}",
-                        f"{dipdir_deg:.2f}",
-                        num_members,
-                        confidence,
-                        is_manual_seed,
-                    ])
-                # for cluster_id, cluster_data in sorted(clusters_dict.items()):
-                #     # 计算面积加权平均倾角/倾向
-                #     dip_list = np.array(cluster_data["dip_list"])
-                #     dipdir_list = np.array(cluster_data["dipdir_list"])
-                #     area_list = np.array(cluster_data["area_list"])
-                #
-                #     if np.sum(area_list) > 0:
-                #         # 面积加权平均
-                #         weights = area_list / np.sum(area_list)
-                #         mean_dip = np.average(dip_list, weights=weights)
-                #         mean_dipdir = np.average(dipdir_list, weights=weights)
-                #     else:
-                #         # 简单平均
-                #         mean_dip = np.mean(dip_list)
-                #         mean_dipdir = np.mean(dipdir_list)
-                #
-                #     # 确保倾向在 [0, 360) 范围内
-                #     mean_dipdir = mean_dipdir % 360.0
-                #
-                #     writer.writerow([
-                #         cluster_id,
-                #         f"{mean_dip:.2f}",
-                #         f"{mean_dipdir:.2f}",
-                #         cluster_data["count"],
-                #     ])
-
-            self.logger.info(
-                f"聚类级 CSV 导出完成: {csv_path}, 共写入 {len(self.clusters)} 行."
             )
 
     # ---------------------------------------------------------
@@ -680,6 +555,7 @@ class ResultsExporter:
                         "Segment_id",
                     ])
 
+                    disc_cluster_id = getattr(disc, "cluster_id", -1)
                     base_color = self._GenerateColorFromId(disc_id)
                     dr, dg, db = base_color
 
@@ -702,6 +578,11 @@ class ResultsExporter:
                         g_val = getattr(p, "g", 0)
                         b_val = getattr(p, "b", 0)
 
+                        if self.cluster_labels is not None:
+                            cluster_id = int(self.cluster_labels[int(pid)])
+                        else:
+                            cluster_id = disc_cluster_id if disc_cluster_id != -1 else -1
+
                         seg_id = seg_id_map.get(int(pid), -1)
 
                         writer.writerow([
@@ -710,7 +591,7 @@ class ResultsExporter:
                             r_val, g_val, b_val,
                             dr, dg, db,
                             disc_id,
-                            disc.cluster_id,
+                            cluster_id,
                             seg_id,
                         ])
 

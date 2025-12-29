@@ -27,8 +27,9 @@ class ResultsExporter:
         - 在构造函数中保存 point_cloud 与 discontinuities, 以及可选的 cluster_labels。
         - 点级 CSV:
             遍历所有 Discontinuity/Segment/point_indices, 对每个点写出一行记录,
-            包含点坐标/法向/颜色, 隶属 Discontinuity/Segment, 以及平面参数 A,B,C,D 和 RMS、
-            以及根据 Discontinuity id 生成的可视化颜色 DR,DG,DB。
+            包含点坐标/法向/颜色, 所属 Discontinuity/Segment, 以及平面参数 A,B,C,D,
+            平均拟合误差 RMS、局部曲率 Curvature、点到平面的距离 DistToPlane,
+            以及基于 Discontinuity_id 的统一颜色 DR,DG,DB。
         - 结构面级 CSV:
             对每个 Discontinuity:
                 * 汇总该结构面所有点索引(去重)
@@ -162,15 +163,16 @@ class ResultsExporter:
                [X, Y, Z, nx, ny, nz, R, G, B,
                 DR, DG, DB,
                 Discontinuity_id, Cluster_id, Segment_id,
-                A, B, C, D, RMS]
+                A, B, C, D, RMS,
+                Curvature, DistToPlane]
             2) 遍历所有 Discontinuity (按列表索引作为 Discontinuity_id):
                遍历其所有 Segment (索引作为 Segment_id):
                  对于 segment.point_indices 中的每个点索引:
-                     - 取出点的坐标/颜色/法向;
-                     - cluster_id: 若有 cluster_labels 则用对应值,
-                       否则尝试使用 disc.cluster_id, 再否则为 -1;
-                     - 通过 _GenerateColorFromId(disc_id) 得到 DR,DG,DB;
+                     - 取出点的坐标/颜色/法向/曲率;
+                     - cluster_id: 若有 cluster_labels 则用对应值, 否则为 -1 或 disc.cluster_id;
                      - 平面参数 A,B,C,D 与 plane.rmse;
+                     - DistToPlane: 当前点到该平面的距离(绝对值);
+                     - DR,DG,DB: 由 _GenerateColorFromId(disc_id) 生成的统一颜色;
                      - 写入一行 CSV.
             3) 记录总写入点数并输出日志.
 
@@ -199,6 +201,8 @@ class ResultsExporter:
                     "Segment_id",
                     "A", "B", "C", "D",
                     "RMS",
+                    "Curvature",
+                    "DistToPlane",
                 ])
 
                 for disc_id, disc in enumerate(self.discontinuities):
@@ -231,6 +235,15 @@ class ResultsExporter:
                             g_val = getattr(p, "g", 0)
                             b_val = getattr(p, "b", 0)
 
+                            # 曲率
+                            curvature = (
+                                float(p.curvature)
+                                if hasattr(p, "curvature")
+                                else float("nan")
+                            )
+                            # 点到平面的距离(绝对值)
+                            dist_to_plane = abs(A * x + B * y + C * z + D)
+
                             writer.writerow([
                                 x, y, z,
                                 nx, ny, nz,
@@ -241,6 +254,8 @@ class ResultsExporter:
                                 seg_id,
                                 A, B, C, D,
                                 rms,
+                                curvature,
+                                dist_to_plane,
                             ])
                             count_rows += 1
 
@@ -630,14 +645,23 @@ class ResultsExporter:
         """
         功能简介:
             为每个 Discontinuity 单独导出:
-                - DisconPoints_{id}_{PointsNumber}.csv
-                - DisconPolygon_{id}_{PointsNumber}.ply
+                1) 所有 inlier 点的点级 CSV;
+                2) 对应凸包多边形的 PLY。
+            文件命名为:
+                DisconPoints_{id}_{PointsNumber}.csv
+                DisconPolygon_{id}_{PointsNumber}.ply
 
         实现思路:
-            1) 为每个结构面汇总所有点索引(去重), 提取点坐标/法向/颜色, 写入 CSV。
-               CSV 字段结构与全局 points.csv 基本一致, 但仅包含单个结构面的点。
-            2) 调用 disc.ComputeGeometry, 基于 polygon_points_proj 和 centroid_proj
-               构造三角扇形式的多边形 PLY, 与全局 _polygons.ply 保持一致。
+            1) 在 discon_dir 下创建目录;
+            2) 对每个 disc:
+                - 若无 segments 则跳过;
+                - PointsNumber 取 len(set(disc.point_indices)) 若存在,
+                  否则由所有 segment.point_indices 合并去重得到;
+                - 构造文件名并写入:
+                    * 点 CSV 的列结构与 ExportPointLevelCsv 相同,
+                      但仅写当前 disc 的点;
+                    * polygon PLY 使用 disc.polygon_points, 统一颜色由
+                      _GenerateColorFromId(disc_id) 给出。
         """
         out_dir_root = os.path.abspath(out_dir_root)
         os.makedirs(out_dir_root, exist_ok=True)
@@ -678,6 +702,10 @@ class ResultsExporter:
                         "Discontinuity_id",
                         "Cluster_id",
                         "Segment_id",
+                        "A", "B", "C", "D",
+                        "RMS",
+                        "Curvature",
+                        "DistToPlane",
                     ])
 
                     base_color = self._GenerateColorFromId(disc_id)
@@ -691,6 +719,7 @@ class ResultsExporter:
 
                     for pid in idx_all:
                         p = self.point_cloud.points[int(pid)]
+
                         x, y, z = p.x, p.y, p.z
 
                         if getattr(p, "normal", None) is not None:
@@ -703,6 +732,19 @@ class ResultsExporter:
                         b_val = getattr(p, "b", 0)
 
                         seg_id = seg_id_map.get(int(pid), -1)
+                        seg = disc.segments[seg_id]
+                        plane = seg.plane
+                        A, B, C = plane.normal
+                        D = plane.d
+                        rms = plane.rmse
+
+                        curvature = (
+                            float(p.curvature)
+                            if hasattr(p, "curvature")
+                            else float("nan")
+                        )
+
+                        dist_to_plane = abs(A * x + B * y + C * z + D)
 
                         writer.writerow([
                             x, y, z,
@@ -712,6 +754,10 @@ class ResultsExporter:
                             disc_id,
                             disc.cluster_id,
                             seg_id,
+                            A, B, C, D,
+                            rms,
+                            curvature,
+                            dist_to_plane,
                         ])
 
                 # 2) 单结构面多边形 PLY (三角扇)

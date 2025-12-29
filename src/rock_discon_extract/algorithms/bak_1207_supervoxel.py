@@ -1,4 +1,4 @@
-# RockDiscontinuity/src/rock_discon_extract/algorithms/supervoxel.py
+# RockDiscontinuity/src/rock_discon_extract/algorithms/detector_supervoxel.py
 
 from typing import List, Dict, Tuple, Set
 import math
@@ -598,7 +598,7 @@ if __name__ == "__main__":
     from ..io_pointcloud import PointCloudIO
 
     if len(sys.argv) < 2:
-        print("Usage: python supervoxel.py <point_cloud_file>")
+        print("Usage: python detector_supervoxel.py <point_cloud_file>")
         sys.exit(0)
     pc_path = sys.argv[1]
     pc = PointCloudIO.ReadPointCloud(pc_path)

@@ -14,11 +14,11 @@ from src.rock_discon_extract.results_exporter import ResultsExporter
 from src.rock_discon_extract.visualizer import ResultsVisualizer
 from src.rock_discon_extract.logging_utils import LoggerManager
 
-from src.rock_discon_extract.algorithms.ransac import RansacDetector
-from src.rock_discon_extract.algorithms.region_growing import RegionGrowingDetector
-from src.rock_discon_extract.algorithms.moe import MoeDetector
-from src.rock_discon_extract.algorithms.supervoxel import SupervoxelDetector
-from src.rock_discon_extract.algorithms.dbfcm_cluster import DBFCMCluster
+from src.rock_discon_extract.algorithms.detector_ransac import RansacDetector
+from src.rock_discon_extract.algorithms.detector_rg import RegionGrowingDetector
+from src.rock_discon_extract.algorithms.detector_moe import MoeDetector
+from src.rock_discon_extract.algorithms.detector_supervoxel import SupervoxelDetector
+from src.rock_discon_extract.algorithms.cluster_dbfcm import DBFCMCluster
 
 
 def GenerateSyntheticPlanePointCloud(num_points=1000) -> PointCloud:

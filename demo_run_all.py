@@ -10,16 +10,16 @@ from src.rock_discon_extract.pipeline import RockDiscontinuityPipeline
 from src.rock_discon_extract.results_exporter import ResultsExporter
 from src.rock_discon_extract.visualizer import ResultsVisualizer
 from src.rock_discon_extract.logging_utils import LoggerManager
-from src.rock_discon_extract.algorithms.ransac import RansacDetector
-from src.rock_discon_extract.algorithms.region_growing import RegionGrowingDetector
-from src.rock_discon_extract.algorithms.moe import MoeDetector
-from src.rock_discon_extract.algorithms.supervoxel import SupervoxelDetector
-from src.rock_discon_extract.algorithms.dbfcm_cluster import DBFCMCluster
+from src.rock_discon_extract.algorithms.detector_ransac import RansacDetector
+from src.rock_discon_extract.algorithms.detector_rg import RegionGrowingDetector
+from src.rock_discon_extract.algorithms.detector_moe import MoeDetector
+from src.rock_discon_extract.algorithms.detector_supervoxel import SupervoxelDetector
+from src.rock_discon_extract.algorithms.cluster_dbfcm import DBFCMCluster
 
 result_path = r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result"
 
 point_path_list = [
-    r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\data\rock_data\Rock_GLS4_part1_localize_0.02m.ply",
+    r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\data\rock_data\Rock_GLS4_part1_localize_0.05m.ply",
     # r"E:\Database\_RockPoints\TSDK_Rockfall_RegularClip\TSDK_Rockfall_1_P1_0.05m.ply",
 ]
 # point_path_list = [
@@ -73,15 +73,33 @@ detector_algorithms = [
     #     angle_threshold=15,
     #     min_inliers=100,
     #     max_iterations=1000,
+    #     impl_mode="manual"  # "sklearn" "manual"
+    # ),
+    #
+    # # Open3D 后端 RANSAC
+    # RansacDetector(
+    #     distance_threshold=0.25,
+    #     angle_threshold=15,
+    #     min_inliers=100,
+    #     max_iterations=1000,
     #     impl_mode="open3d"  # "sklearn" "manual"
     # ),
     #
+    # # Open3D 后端 RANSAC
+    # RansacDetector(
+    #     distance_threshold=0.25,
+    #     angle_threshold=15,
+    #     min_inliers=100,
+    #     max_iterations=1000,
+    #     impl_mode="sklearn"  # "sklearn" "manual"
+    # ),
+
     # RegionGrowingDetector(
     #     normal_angle_threshold=15.0,
     #     distance_threshold=0.25,
     #     min_region_size=100
     # ),
-
+    #
     # MoeDetector(
     #     voxel_size=0.5,
     #     num_major_orientations=0,
@@ -95,22 +113,22 @@ detector_algorithms = [
     #     max_distance=0.3
     # ),
 
-    # # 弱风化岩体
+    # 弱风化岩体
     SupervoxelDetector(
         voxel_size=1,  # 基于点云平均间距实际情况,不要过大
-        ransac_distance=0.2,  # 需要足够精确,但需要顾及测量误差
+        ransac_distance=0.224,  # 需要足够精确,但需要顾及测量误差
         min_plane_points=30,  # RANSAC后的内点数只要大于此值则认为是成立的,应该取决于voxel内的平均点数
-        edge_distance=0.2,  # edge拼接,需要和平面估计同样严格
-        edge_angle=10,  # edge拼接,需要和平面估计同样严格
+        edge_distance=0.224,  # edge拼接,需要和平面估计同样严格
+        edge_angle=5,  # edge拼接,需要和平面估计同样严格
         min_edge_points=30,  # 启动edge patch detect的最小点数
-        min_edge_patch_points=25,  # edge patch detect后的内点数
+        min_edge_patch_points=20,  # edge patch detect后的内点数
         super_distance=0.3,  # 吸纳周围散点的初始阈值
         super_angle=30,  # 吸纳周围散点的初始阈值
         max_refit_error=5.0,  # 吸纳周围散点时至多可接受的误差
-        distance_step=0.01,  # 2个step保持同步
-        angle_step=1.0,  # 2个step保持同步
-        patch_distance=0.25,
-        patch_angle=15
+        distance_step=0.03,  # 2个step保持同步
+        angle_step=3.0,  # 2个step保持同步
+        patch_distance=0.3,
+        patch_angle=30
     ),
 
     # 强风化岩体

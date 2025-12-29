@@ -1,4 +1,4 @@
-# RockDiscontinuity/src/rock_discon_extract/algorithms/supervoxel.py
+# RockDiscontinuity/src/rock_discon_extract/algorithms/detector_covoxpg.py
 
 from typing import List, Dict, Tuple, Set
 import math
@@ -16,7 +16,7 @@ except ImportError:
     o3d = None
 
 
-class SupervoxelDetector(PlaneDetectionAlgorithm):
+class PatchgrowingDetector(PlaneDetectionAlgorithm):
     """
     基于超体素与区域生长的高精度平面检测算法 (Supervoxel-RegionGrowing).
 
@@ -735,12 +735,12 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
 
 if __name__ == "__main__":
-    # 简单命令行测试: python supervoxel.py <point_cloud_file>
+    # 简单命令行测试: python detector_supervoxel.py <point_cloud_file>
     import sys
     from ..io_pointcloud import PointCloudIO
 
     if len(sys.argv) < 2:
-        print("Usage: python supervoxel.py <point_cloud_file>")
+        print("Usage: python detector_supervoxel.py <point_cloud_file>")
         sys.exit(0)
 
     pc_path = sys.argv[1]

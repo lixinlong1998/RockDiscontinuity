@@ -62,10 +62,10 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
     """
 
     def __init__(
-        self,
-        normal_angle_threshold: float,
-        distance_threshold: float,
-        min_region_size: int
+            self,
+            normal_angle_threshold: float,
+            distance_threshold: float,
+            min_region_size: int
     ):
         super().__init__(name="RegionGrowing")
 
@@ -176,6 +176,7 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
 
                 discontinuity = Discontinuity(
                     segments=[segment],
+                    plane=plane,
                     dip=dip,
                     dip_direction=dip_direction,
                     roughness=plane.rmse,
@@ -203,8 +204,8 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
         return discontinuities
 
     def _BuildCoordsAndNormals(
-        self,
-        point_cloud: PointCloud,
+            self,
+            point_cloud: PointCloud,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         功能简介:
@@ -298,11 +299,11 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
             return coords
 
     def _QueryNeighbors(
-        self,
-        neighbor_searcher,
-        coords: np.ndarray,
-        center_index: int,
-        search_radius: float,
+            self,
+            neighbor_searcher,
+            coords: np.ndarray,
+            center_index: int,
+            search_radius: float,
     ) -> np.ndarray:
         """
         功能简介:
@@ -330,7 +331,7 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
         """
         if hasattr(neighbor_searcher, "query_radius"):
             # KDTree 路径
-            center = coords[center_index : center_index + 1]
+            center = coords[center_index: center_index + 1]
             indices = neighbor_searcher.query_radius(center, r=search_radius)[0]
             return indices.astype(int)
 
@@ -342,16 +343,16 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
         return indices.astype(int)
 
     def _GrowRegion(
-        self,
-        seed_idx: int,
-        coords: np.ndarray,
-        normals: np.ndarray,
-        normals_valid: np.ndarray,
-        neighbor_searcher,
-        visited: np.ndarray,
-        search_radius: float,
-        distance_threshold: float,
-        cos_angle_thresh: float,
+            self,
+            seed_idx: int,
+            coords: np.ndarray,
+            normals: np.ndarray,
+            normals_valid: np.ndarray,
+            neighbor_searcher,
+            visited: np.ndarray,
+            search_radius: float,
+            distance_threshold: float,
+            cos_angle_thresh: float,
     ) -> List[int]:
         """
         功能简介:
@@ -440,9 +441,9 @@ class RegionGrowingDetector(PlaneDetectionAlgorithm):
         return region_indices
 
     def _FitPlaneFromPoints(
-        self,
-        coords: np.ndarray,
-        inlier_indices: np.ndarray,
+            self,
+            coords: np.ndarray,
+            inlier_indices: np.ndarray,
     ) -> Plane:
         """
         功能简介:

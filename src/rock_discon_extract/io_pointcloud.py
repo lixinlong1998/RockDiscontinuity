@@ -50,8 +50,8 @@ class PointCloudIO:
 
     @classmethod
     def ReadPointCloudArrays(
-        cls,
-        file_path: str
+            cls,
+            file_path: str
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Dict[str, np.ndarray]]:
         """
         功能简介:
@@ -94,9 +94,9 @@ class PointCloudIO:
 
     @classmethod
     def ReadPointCloudAsObjects(
-        cls,
-        file_path: str,
-        attach_extra_attrs: bool = False
+            cls,
+            file_path: str,
+            attach_extra_attrs: bool = False
     ) -> PointCloud:
         """
         功能简介:
@@ -186,8 +186,8 @@ class PointCloudIO:
 
     @classmethod
     def _ReadPlyGeneric(
-        cls,
-        file_path: str
+            cls,
+            file_path: str
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Dict[str, np.ndarray]]:
         """
         功能简介:
@@ -287,8 +287,8 @@ class PointCloudIO:
 
     @classmethod
     def _ReadLasGeneric(
-        cls,
-        file_path: str
+            cls,
+            file_path: str
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Dict[str, np.ndarray]]:
         """
         功能简介:
@@ -367,8 +367,8 @@ class PointCloudIO:
 
     @classmethod
     def _ReadXyzGeneric(
-        cls,
-        file_path: str
+            cls,
+            file_path: str
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Dict[str, np.ndarray]]:
         """
         【未经验证】功能简介:
@@ -400,7 +400,13 @@ class PointCloudIO:
         """
         cls.logger.info(f"读取 XYZ 点云: {file_path}")
         # 使用 loadtxt 读取, 默认以空白分隔, 忽略 '#' 注释行
-        data = np.loadtxt(file_path, comments="#", dtype=np.float64)
+        try:
+            data = np.loadtxt(file_path, comments="#", dtype=np.float64, delimiter=',')
+        except:
+            try:
+                data = np.loadtxt(file_path, comments="#", dtype=np.float64, delimiter=' ')
+            except:
+                raise Exception
 
         if data.ndim == 1:
             # 单行数据情况, 扩展为 (1, M)

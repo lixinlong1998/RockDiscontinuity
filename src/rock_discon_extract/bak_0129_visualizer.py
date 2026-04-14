@@ -2673,51 +2673,30 @@ class ResultsVisualizer:
             # ---------- 6) KDE 密度 ----------
             density_norm = None
             try:
-                # === 网格：endpoint=False 避免同时采样 0° 和 360°，并为后续首尾闭合做准备 ===
-                n_dir, n_dip = 180, 91
-                dir_grid = np.linspace(0.0, 360.0, n_dir, endpoint=False)  # [0, 360)
+                n_dir, n_dip = 181, 91
+                dir_grid = np.linspace(0.0, 360.0, n_dir)
                 dip_grid = np.linspace(0.0, 90.0, n_dip)
                 dir_mesh, dip_mesh = np.meshgrid(dir_grid, dip_grid)
 
-                # === KDE 输入特征：将 dipdir 作为周期变量处理：dipdir -> (cosθ, sinθ)，dip -> dip/90 ===
-                dipdir_rad = np.deg2rad(dipdir_deg_plot)
-                dip_norm = dip_deg_plot / 90.0
-                X = np.column_stack([np.cos(dipdir_rad), np.sin(dipdir_rad), dip_norm])
+                theta_grid = np.deg2rad(dir_mesh)
+                r_grid = _StereographicRFromDip(dip_mesh)
 
-                # 带宽：三维特征下，经验上需要比二维(0.05)更大一些
-                kde = KernelDensity(bandwidth=0.22, kernel="gaussian")
+                # 与 _PlotStereonetKdeSingle 保持一致: 将变量归一化到 [0,1]
+                X = np.column_stack([dipdir_deg_plot / 360.0, dip_deg_plot / 90.0])
+
+                kde = KernelDensity(bandwidth=0.05, kernel="gaussian")
                 kde.fit(X)
 
-                # === 评估网格密度 ===
-                dir_mesh_rad = np.deg2rad(dir_mesh)
-                grid_points = np.column_stack([
-                    np.cos(dir_mesh_rad.ravel()),
-                    np.sin(dir_mesh_rad.ravel()),
-                    (dip_mesh.ravel() / 90.0),
-                ])
+                grid_points = np.column_stack([dir_mesh.ravel() / 360.0, dip_mesh.ravel() / 90.0])
                 log_density = kde.score_samples(grid_points)
                 density = np.exp(log_density).reshape(dir_mesh.shape)
 
-                # 归一化到 [0, 1]
                 density_norm = (density - density.min()) / (density.max() - density.min() + 1e-12)
-
-                # === 首尾闭合：追加 θ=360° 列，复制 θ=0° 密度，确保 contour/contourf 无切缝 ===
-                dir_grid_closed = np.append(dir_grid, 360.0)
-                dir_mesh_closed, dip_mesh_closed = np.meshgrid(dir_grid_closed, dip_grid)
-
-                theta_grid = np.deg2rad(dir_mesh_closed)
-                r_grid = _StereographicRFromDip(dip_mesh_closed)
-                density_norm = np.hstack([density_norm, density_norm[:, [0]]])
-
             except Exception as e:
-                self.logger.warning(
-                    f"_PlotPointsStereonetKdeSingle: KDE 计算失败, 将不绘制密度背景. 错误: {e}"
-                )
+                self.logger.warning(f"_PlotPointsStereonetKdeSingle: KDE 计算失败, 将不绘制密度背景. 错误: {e}")
                 density_norm = None
-                theta_grid, r_grid = None, None
 
             # ---------- 7) 画布布局 ----------
-
             fig = plt.figure(figsize=(16, 8), dpi=self.dpi)
             gs = fig.add_gridspec(
                 1, 3,

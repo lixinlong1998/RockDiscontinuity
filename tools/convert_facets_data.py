@@ -131,8 +131,10 @@ def create_output_txt(ply_file, labels_file, metrics_file, output_file):
 
 
 if __name__ == "__main__":
-    workspace = r"D:\Research\20250313_RockFractureSeg\Code\qfacet_gpu\data\facet_export\TSDK_Rockfall_13_P1_ORG_facets_Kd_E0.3A10"
-    filebasename = "TSDK_Rockfall_13_P1_ORG_facets"
+    workspace = r"D:\Research\20250313_RockFractureSeg\Code\qfacet_gpu\data\facet_export\Rock_GLS4_part1_localize_0.05m_facets_Kd_E0.2A25"
+    filebasename = "Rock_GLS4_part1_localize_0.05m_facets"
+    # workspace = r"D:\Research\20250313_RockFractureSeg\Code\qfacet_gpu\data\facet_export\TSDK_Rockfall_13_P1_ORG_facets_Kd_E0.3A10"
+    # filebasename = "TSDK_Rockfall_13_P1_ORG_facets"
     ply_file = os.path.join(workspace, f"{filebasename}_points.ply")
     labels_file = os.path.join(workspace, f"{filebasename}_stereographic_labels.csv")
     metrics_file = os.path.join(workspace, f"{filebasename}_metrics.csv")

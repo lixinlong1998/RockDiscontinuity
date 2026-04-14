@@ -16,13 +16,14 @@ from src.rock_discon_extract.algorithms.detector_moe import MoeDetector
 from src.rock_discon_extract.algorithms.detector_supervoxel import SupervoxelDetector
 from src.rock_discon_extract.algorithms.cluster_dbfcm import DBFCMCluster
 
-# result_path = r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result"
-result_path = r"E:\Projects\20240610_ĞÂ½®ÌìÉ½-¶À¿âÒ°Íâ¼à²â·½°¸_æ¯½ã\20251205_Ìá½»Ò»Ğ©ÒÑÓĞµÄ²ÄÁÏ\results\TSDK_Rockfall_2025Report_v3"
+result_path = r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result"
+# result_path = r"E:\Projects\20240610_ĞÂ½®ÌìÉ½-¶À¿âÒ°Íâ¼à²â·½°¸_æ¯½ã\20251205_Ìá½»Ò»Ğ©ÒÑÓĞµÄ²ÄÁÏ\results\TSDK_Rockfall_2025Report_v3"
 
-# point_path_list = [
-#     r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\data\rock_data\Rock_GLS4_part1_localize_0.05m.ply",
-#     # r"E:\Database\_RockPoints\TSDK_Rockfall_RegularClip\TSDK_Rockfall_1_P1_0.05m.ply",
-# ]
+point_path_list = [
+    r"D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\data\rock_data\Rock_GLS4_part1_localize_0.02m_WithoutNoneDiscon.csv",
+    # r"E:\Database\_RockPoints\TSDK_Rockfall_RegularClip\TSDK_Rockfall_1_P1_0.05m.ply",
+]
+
 # point_path_list = [
 #     r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop1_P1_0.05m.ply",
 #     r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop2_P1_0.05m.ply",
@@ -43,28 +44,29 @@ result_path = r"E:\Projects\20240610_ĞÂ½®ÌìÉ½-¶À¿âÒ°Íâ¼à²â·½°¸_æ¯½ã\20251205_Ìá½
 #     r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK246_Outcrop_P1_1_0.05m.ply",
 #     r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK216_Outcrop_P1_1_0.05m.ply",
 # ]
-point_path_list = [
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop1_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop2_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop3_P4_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K76_Outcrop_P1_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K53_Outcrop_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K55_Outcrop_P1_0.05m.ply",  # »¹Ã»½â¾ö
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_À­ÅÁÌØ_Outcrop1_P2_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_À­ÅÁÌØ_Outcrop2_P3_0.05m.ply",
-    # # »»³É20240803_G217_À­ÅÁÌØ_Outcrop2_P3_0.05m.ply
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_¹şÏ£ÀÕ¸ù_Outcrop_P2_0.05m.ply",
-    # # Ã»½á¹¹Ãæ
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_ÏÄ´ïÀÕËş_Outcrop_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_°¢ËÕÈøÒÁ_Outcrop_P2_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240804_G3033_K110_Outcrop_P1_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G3033_K159_Outcrop_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G3033_K164_Outcrop_P1_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G217_L2K18_Outcrop_P3_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK247_Outcrop_P1_0.05m.ply",
-    # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK246_Outcrop_P1_1_0.05m.ply",
-    r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK216_Outcrop_P1_1_0.05m.ply",
-]
+
+# point_path_list = [
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop1_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop2_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G217_°ÍÒô¹µ_Outcrop3_P4_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K76_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K53_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240802_G3033_K55_Outcrop_P1_0.05m.ply",  # »¹Ã»½â¾ö
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_À­ÅÁÌØ_Outcrop1_P2_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_À­ÅÁÌØ_Outcrop2_P3_0.05m.ply",
+#     # # »»³É20240803_G217_À­ÅÁÌØ_Outcrop2_P3_0.05m.ply
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_¹şÏ£ÀÕ¸ù_Outcrop_P2_0.05m.ply",
+#     # # Ã»½á¹¹Ãæ
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_ÏÄ´ïÀÕËş_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240803_G217_°¢ËÕÈøÒÁ_Outcrop_P2_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240804_G3033_K110_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G3033_K159_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G3033_K164_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240805_G217_L2K18_Outcrop_P3_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK247_Outcrop_P1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK246_Outcrop_P1_1_0.05m.ply",
+#     # r"E:\Database\_RockPoints\TSDK_Rockfall_2025report\resample\20240807_G3033_EK216_Outcrop_P1_1_0.05m.ply",
+# ]
 
 # Ö¸¶¨Ê¹ÓÃµÄËã·¨ºÍ²ÎÊı
 detector_algorithms = [
@@ -96,11 +98,11 @@ detector_algorithms = [
     # ),
 
     # RegionGrowingDetector(
-    #     normal_angle_threshold=15.0,
+    #     normal_angle_threshold=25,
     #     distance_threshold=0.25,
     #     min_region_size=100
     # ),
-    #
+
     # MoeDetector(
     #     voxel_size=0.5,
     #     num_major_orientations=0,
@@ -129,7 +131,9 @@ detector_algorithms = [
     #     distance_step=0.03,  # 2¸östep±£³ÖÍ¬²½
     #     angle_step=3.0,  # 2¸östep±£³ÖÍ¬²½
     #     patch_distance=0.3,
-    #     patch_angle=30
+    #     patch_angle=30,
+    #     voxel_patch_thickness=None,  # ĞÂÔö£ººñ¶È´ø°ëºñ¶È
+    #     voxel_patch_bitmap_B=0.05,  # ĞÂÔö£ºbitmap ·Ö±æÂÊ B
     # ),
 
     # Ç¿·ç»¯ÑÒÌå
@@ -147,25 +151,30 @@ detector_algorithms = [
     #     distance_step=0.01,  # 2¸östep±£³ÖÍ¬²½
     #     angle_step=1.0,  # 2¸östep±£³ÖÍ¬²½
     #     patch_distance=0.25,
-    #     patch_angle=20
+    #     patch_angle=20,
+    #     voxel_patch_thickness=None,  # ĞÂÔö£ººñ¶È´ø°ëºñ¶È
+    #     voxel_patch_bitmap_B=0.05,  # ĞÂÔö£ºbitmap ·Ö±æÂÊ B
     # ),
 
-    # Ç¿·ç»¯ÑÒÌåv2
+    # # Ç¿·ç»¯ÑÒÌåv2
     SupervoxelDetector(
         voxel_size=1.5,  # »ùÓÚµãÔÆÆ½¾ù¼ä¾àÊµ¼ÊÇé¿ö,²»Òª¹ı´ó
-        ransac_distance=0.3,  # ĞèÒª×ã¹»¾«È·,µ«ĞèÒª¹Ë¼°²âÁ¿Îó²î
-        min_plane_points=20,  # RANSACºóµÄÄÚµãÊıÖ»Òª´óÓÚ´ËÖµÔòÈÏÎªÊÇ³ÉÁ¢µÄ,Ó¦¸ÃÈ¡¾öÓÚvoxelÄÚµÄÆ½¾ùµãÊı
-        edge_distance=0.3,  # edgeÆ´½Ó,ĞèÒªºÍÆ½Ãæ¹À¼ÆÍ¬ÑùÑÏ¸ñ
-        edge_angle=15,  # edgeÆ´½Ó,ĞèÒªºÍÆ½Ãæ¹À¼ÆÍ¬ÑùÑÏ¸ñ
-        min_edge_points=20,  # Æô¶¯edge patch detectµÄ×îĞ¡µãÊı
-        min_edge_patch_points=10,  # edge patch detectºóµÄÄÚµãÊı
-        super_distance=0.3,  # ÎüÄÉÖÜÎ§É¢µãµÄ³õÊ¼ãĞÖµ
-        super_angle=30,  # ÎüÄÉÖÜÎ§É¢µãµÄ³õÊ¼ãĞÖµ
-        max_refit_error=5.0,  # ÎüÄÉÖÜÎ§É¢µãÊ±ÖÁ¶à¿É½ÓÊÜµÄÎó²î
+        ransac_distance=0.22,  # ĞèÒª×ã¹»¾«È·,µ«ĞèÒª¹Ë¼°²âÁ¿Îó²î
+        ransac_angle=30,  # ²»ÓÃÌ«¹ı¾«È·£¬ÒòÎªÊµ¼Ê½á¹¹Ãæ²¢²»ÊÇÍêÃÀµÄÆ½Ãæ£¬¶øÊÇÔÚÆäÄÚ²¿´æÔÚÆğ·ü
+        min_plane_points=60,  # RANSACºóµÄÄÚµãÊıÖ»Òª´óÓÚ´ËÖµÔòÈÏÎªÊÇ³ÉÁ¢µÄ,Ó¦¸ÃÈ¡¾öÓÚvoxelÄÚµÄÆ½¾ùµãÊı
+        edge_distance=0.4,  # edgeÆ´½Ó,ĞèÒªºÍÆ½Ãæ¹À¼ÆÍ¬ÑùÑÏ¸ñ
+        edge_angle=30,  # edgeÆ´½Ó,ĞèÒªºÍÆ½Ãæ¹À¼ÆÍ¬ÑùÑÏ¸ñ
+        min_edge_points=30,  # Æô¶¯edge patch detectµÄ×îĞ¡µãÊı
+        min_edge_patch_points=15,  # edge patch detectºóµÄÄÚµãÊı
+        super_distance=0.4,  # ÎüÄÉÖÜÎ§É¢µãµÄ³õÊ¼ãĞÖµ
+        super_angle=40,  # ÎüÄÉÖÜÎ§É¢µãµÄ³õÊ¼ãĞÖµ
         distance_step=0.01,  # 2¸östep±£³ÖÍ¬²½
         angle_step=1.0,  # 2¸östep±£³ÖÍ¬²½
-        patch_distance=0.3,
-        patch_angle=25
+        max_refit_error=8.0,  # ÎüÄÉÖÜÎ§É¢µãÊ±ÖÁ¶à¿É½ÓÊÜµÄÎó²î
+        patch_distance=0.5,
+        patch_angle=30,
+        voxel_patch_thickness=0.3,  # ĞÂÔö£ººñ¶È´ø°ëºñ¶È
+        voxel_patch_bitmap_B=0.05,  # ĞÂÔö£ºbitmap ·Ö±æÂÊ B
     ),
     # TODO: ÆäËü¼ì²âËã·¨Í¬ÑùÔÚ´ËÌí¼Ó
 ]
@@ -213,7 +222,7 @@ if __name__ == "__main__":
         point_cloud = PointCloudIO.ReadPointCloudAsObjects(point_path, attach_extra_attrs=False)  # ´óÊı¾İ½¨ÒéÏÈ¹Øµô
 
         # ¡¾¿ÉÑ¡¡¿2) ¹À¼Æ·¨ÏòÓëÇúÂÊ, ±ãÓÚºóĞø¿ÉÊÓ»¯(CloudCompare ÇúÂÊ/·¨ÏòÈÈÁ¦Í¼µÈ)
-        point_cloud.EstimateNormals(k_neighbor=30, est_normals=False, est_curvature=True)  # ÈôÊäÈë PLY ÒÑ´ø·¨Ïò, ¿ÉÒÔÔİÊ±×¢ÊÍµô±¾ĞĞ
+        point_cloud.EstimateNormals(k_neighbor=30, est_normals=True, est_curvature=True)  # ÈôÊäÈë PLY ÒÑ´ø·¨Ïò, ¿ÉÒÔÔİÊ±×¢ÊÍµô±¾ĞĞ
 
         # ¡¾¿ÉÑ¡¡¿3) ÈË¹¤¸ø¶¨µÄ½á¹¹Ãæ dip/dir ÁĞ±í, Ã¿ÏîÎª (dip_deg, dip_dir_deg), ÓÃÓÚ×÷Îª¶îÍâ³õÊ¼´ØÖĞĞÄ¡£
         manual_dip_dirs = []

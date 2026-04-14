@@ -242,7 +242,7 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
             for voxel_id, pts_indices_list in voxel_map.items():
                 pts_indices = np.array(pts_indices_list, dtype=int)
                 if pts_indices.size < self.min_plane_points:
-                    # 点数不足, 整个体素视为 non-coplanar, 所有点进入 remain_points
+                    # 体素所有点数量不足, 整个体素视为 non-coplanar, 所有点进入 remain_points
                     remain_points[voxel_id] = set(pts_indices.tolist())
                     continue
 
@@ -287,6 +287,8 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                     filtered_inliers_global = voxel_inliers_global[angle_mask]
                 else:
                     filtered_inliers_global = voxel_inliers_global
+                # # 由于你是“先距离 inliers，再法向过滤”，被法向过滤踢掉的点会留在 remain 里，它们可能再次被另一个平面吸走；在交线/噪声区尤其明显，会造成 patch 边界不稳定
+                # filtered_inliers_global = voxel_inliers_global
 
                 inlier_set = set(filtered_inliers_global.tolist())
                 remain_set = set(pts_indices.tolist()) - inlier_set
@@ -361,10 +363,11 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                         filtered_edge_inliers_global = edge_inliers_global[angle_mask]
                     else:
                         filtered_edge_inliers_global = edge_inliers_global
+                    # # 由于你是“先距离 inliers，再法向过滤”，被法向过滤踢掉的点会留在 remain 里，它们可能再次被另一个平面吸走；在交线/噪声区尤其明显，会造成 patch 边界不稳定
+                    # filtered_edge_inliers_global = edge_inliers_global
 
                     inlier_set = set(filtered_edge_inliers_global.tolist())
                     edge_remain_set = pts_set - inlier_set
-
                     if len(inlier_set) > self.min_edge_patch_points:
                         neighbor_voxels = self._get_neighbor_voxels(voxel_id)
                         best_sim = 100.0

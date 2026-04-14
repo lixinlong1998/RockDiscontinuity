@@ -87,7 +87,7 @@ class PointCloudIO:
                 return cls._ReadPlyGeneric(file_path)
             elif ext in (".las", ".laz"):
                 return cls._ReadLasGeneric(file_path)
-            elif ext in (".xyz", ".txt"):
+            elif ext in (".xyz", ".txt", ".csv"):
                 return cls._ReadXyzGeneric(file_path)
             else:
                 raise ValueError(f"不支持的点云格式: {ext}")
@@ -234,6 +234,7 @@ class PointCloudIO:
         names = v.dtype.names
         if names is None:
             raise ValueError("PLY 'vertex' 元素字段信息为空。")
+        cls.logger.info(f"PLY中的name信息: {names}")
 
         name_set = set(names)
         required_xyz = {"x", "y", "z"}

@@ -42,7 +42,7 @@ except ImportError:
 SUPERVOXEL_DEBUG_EXPORT_DIR = r'D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result\supervoxel_debug_visualizer'  # 调试导出目录；为空则不导出。
 SUPERVOXEL_DEBUG_BASENAME = r'supervoxel_debug'  # 文件名前缀(可选)。
 SUPERVOXEL_DEBUG_EXPORT = True  # 开启or关闭Debug。
-SUPERVOXEL_DEBUG_EXPORT_VOXEL = False
+SUPERVOXEL_DEBUG_EXPORT_VOXEL = True
 
 
 # -----------------------------------------------------------------------------

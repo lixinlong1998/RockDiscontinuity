@@ -123,7 +123,9 @@ if __name__ == "__main__":
             distance_step=0.01,  # 2个step保持同步
             angle_step=1.0,  # 2个step保持同步
             patch_distance=0.25,
-            patch_angle=15
+            patch_angle=15,
+            voxel_patch_thickness=None,  # 新增：厚度带半厚度
+            voxel_patch_bitmap_B=0.05,  # 新增：bitmap 分辨率 B
         ),
 
         # 强风化岩体
@@ -142,6 +144,8 @@ if __name__ == "__main__":
         #     angle_step=1.0,  # 2个step保持同步
         #     patch_distance=0.25,
         #     patch_angle=20
+        #     voxel_patch_thickness = None,  # 新增：厚度带半厚度
+        #     voxel_patch_bitmap_B = 0.05,  # 新增：bitmap 分辨率 B
         # ),
         # TODO: 其它检测算法同样在此添加
     ]

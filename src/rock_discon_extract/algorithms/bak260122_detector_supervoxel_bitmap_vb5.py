@@ -1,25 +1,5 @@
 # RockDiscontinuity/src/rock_discon_extract/algorithms/detector_supervoxel.py
-'''
-我改了哪些地方（只改 Step5，最小侵入）
-修改点 1（关键）：seed 必须立刻从 unmerged 移除
-原逻辑只把被吸收的 j 从 unmerged 移除，但 seed 一直留在 unmerged。这会导致两类严重后果：
-跨簇串联：后续别的 seed 生长时，可能把之前某个 seed 再吸收进去，等价于把两个本不该连通的生长簇“串”起来；
-self-merge：当合并 j 后，把 patch_neighbors[j] 加入队列时，seed_id 会被重新加入候选列表（因为 seed 还在 unmerged），于是出现 seed==neighbor 且被 “merged” 的记录（你 Step5 CSV 里已经出现了这种情况）。
-修复：进入一个 seed 生长簇时，立即 unmerged.discard(seed_id)。
-修改点 2：显式禁止 self-merge / 重复 merge
-即使修改点 1 解决了大部分 self-merge 来源，我仍然增加了硬保护：
-if (j == seed_id) or (j in merged_patch_ids): continue
-修改点 3：增加“面内距离（质心欧氏距离）”约束，抑制远距离误合并
-你指出的核心问题之一是：仅用“邻居质心到 seed 平面的法向距离”无法约束切向（面内）分离，所以即使两片段相距很远，只要在同一近似平面上，依旧可能通过 patch_distance。
-我新增了一个温和阈值：
-patch_centroid_th = max(3*voxel_size, 2*patch_distance)
-合并条件从 (ang_diff < patch_angle and dist_diff < patch_distance) 变为：
-pass_ang and pass_dist and pass_centroid
-并在 supervoxel_debug_Step5_patch_merge_records.csv 追加三列（不破坏旧列）：
-centroid_diff
-pass_patch_centroid
-patch_centroid_th
-'''
+
 from typing import List, Dict, Tuple, Set, Optional
 import math
 import os
@@ -42,7 +22,7 @@ except ImportError:
 SUPERVOXEL_DEBUG_EXPORT_DIR = r'D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result\supervoxel_debug_visualizer'  # 调试导出目录；为空则不导出。
 SUPERVOXEL_DEBUG_BASENAME = r'supervoxel_debug'  # 文件名前缀(可选)。
 SUPERVOXEL_DEBUG_EXPORT = True  # 开启or关闭Debug。
-SUPERVOXEL_DEBUG_EXPORT_VOXEL = False
+SUPERVOXEL_DEBUG_EXPORT_VOXEL = True
 
 
 # -----------------------------------------------------------------------------
@@ -1396,84 +1376,57 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
             unmerged: Set[int] = set(range(n_patches))
             patch_order = sorted(unmerged, key=lambda i: supervoxels[i]["error"])
 
-            unmerged: Set[int] = set(range(n_patches))
-            patch_order = sorted(unmerged, key=lambda i: supervoxels[i]["error"])
-
-            # 关键修正(防误合并): 仅用“质心到平面距离”无法约束面内(切向)分离，
-            # 这里增加一个温和的空间邻近约束，避免“同一平面但相距很远”的片段被直接合并。
-            # 阈值取 max(3*voxel_size, 2*patch_distance)，既兼容 voxel_size=1.5m 的工程设置，
-            # 也不让 patch_distance 很小时阈值过于苛刻。
-            patch_centroid_th = max(self.voxel_size * 3.0, self.patch_distance * 2.0)
-
             while patch_order:
-                seed_id = patch_order.pop(0)
+                seed_id = patch_order[0]
+                patch_order.remove(seed_id)
                 if seed_id not in unmerged:
                     continue
-
-                # -------------------------
-                # 关键修正1：seed 一旦作为当前生长簇的起点，必须立即从 unmerged 中移除。
-                # 否则会出现：
-                #   (a) seed 被后续其他 seed 二次吸收，导致跨簇“串联”远距离误合并；
-                #   (b) seed 被加入 neighbor_list 产生 self-merge (seed==neighbor) 的错误记录。
-                # -------------------------
-                unmerged.discard(seed_id)
 
                 seed_patch = supervoxels[seed_id]
                 seed_normal = np.array(seed_patch["normal"], dtype=float)
                 seed_d = float(seed_patch["d"])
 
-                neighbor_set = {nid for nid in patch_neighbors[seed_id] if (nid in unmerged and nid != seed_id)}
+                neighbor_set = {nid for nid in patch_neighbors[seed_id] if nid in unmerged}
                 neighbor_list = sorted(list(neighbor_set), key=lambda j: supervoxels[j]["error"])
 
                 merged_patch_ids = [seed_id]
 
                 while neighbor_list:
-                    j = neighbor_list.pop(0)
+                    j = neighbor_list[0]
+                    neighbor_list.pop(0)
                     if j not in unmerged:
-                        continue
-                    # 关键修正2：严禁 self-merge / 重复 merge
-                    if (j == seed_id) or (j in merged_patch_ids):
                         continue
 
                     j_patch = supervoxels[j]
                     j_normal = np.array(j_patch["normal"], dtype=float)
 
                     # 法向夹角
-                    cos_angle = float(np.clip(np.abs(seed_normal.dot(j_normal)), -1.0, 1.0))
+                    cos_angle = float(np.clip(
+                        np.abs(seed_normal.dot(j_normal)), -1.0, 1.0
+                    ))
                     ang_diff = math.degrees(math.acos(cos_angle))
 
-                    # 距离差: 邻居 patch 质心到 seed 平面的距离 (法向方向)
+                    # 距离差: 邻居 patch 质心到 seed 平面的距离
                     j_points = coords[list(j_patch["points"])]
                     if j_points.size > 0:
                         j_centroid = j_points.mean(axis=0)
                         dist_diff = abs(seed_normal.dot(j_centroid) + seed_d)
                     else:
-                        j_centroid = np.array([0.0, 0.0, 0.0], dtype=float)
                         dist_diff = 0.0
 
-                    # 额外的空间邻近约束：两片段质心欧氏距离
-                    seed_points_now = coords[list(seed_patch["points"])]
-                    seed_centroid = seed_points_now.mean(axis=0) if seed_points_now.size > 0 else j_centroid
-                    centroid_diff = float(np.linalg.norm(seed_centroid - j_centroid))
-
-                    pass_ang = bool(ang_diff < self.patch_angle)
-                    pass_dist = bool(dist_diff < self.patch_distance)
-                    pass_centroid = bool(centroid_diff < patch_centroid_th)
-
-                    # Debug: Patch-based 区域生长阈值诊断（到底被哪个阈值拦截）
+                    # Debug: Patch-based 区域生长阈值诊断（到底被 patch_distance 还是 patch_angle 拦截）
                     if debug_enabled:
                         try:
-                            if pass_ang and pass_dist and pass_centroid:
+                            pass_ang = bool(ang_diff < self.patch_angle)
+                            pass_dist = bool(dist_diff < self.patch_distance)
+                            if pass_ang and pass_dist:
                                 reason = "merged"
+                            elif (not pass_ang) and (not pass_dist):
+                                reason = "blocked_by_both"
+                            elif not pass_ang:
+                                reason = "blocked_by_patch_angle"
                             else:
-                                blocks = []
-                                if not pass_ang:
-                                    blocks.append("patch_angle")
-                                if not pass_dist:
-                                    blocks.append("patch_distance")
-                                if not pass_centroid:
-                                    blocks.append("patch_centroid")
-                                reason = "blocked_by_" + "_and_".join(blocks) if blocks else "blocked_unknown"
+                                reason = "blocked_by_patch_distance"
                             patch_merge_records.append({
                                 "seed_voxel_id": seed_id,
                                 "neighbor_voxel_id": j,
@@ -1481,10 +1434,6 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                                 "dist_diff": float(dist_diff),
                                 "pass_patch_angle": int(1 if pass_ang else 0),
                                 "pass_patch_distance": int(1 if pass_dist else 0),
-                                # 新增(不破坏旧字段): 面内距离约束诊断
-                                "centroid_diff": float(centroid_diff),
-                                "pass_patch_centroid": int(1 if pass_centroid else 0),
-                                "patch_centroid_th": float(patch_centroid_th),
                                 "patch_angle": float(self.patch_angle),
                                 "patch_distance": float(self.patch_distance),
                                 "decision": reason,
@@ -1492,7 +1441,7 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                         except Exception:
                             pass
 
-                    if pass_ang and pass_dist and pass_centroid:
+                    if ang_diff < self.patch_angle and dist_diff < self.patch_distance:
                         # 合并 patch j 至 seed
                         unmerged.discard(j)
                         merged_patch_ids.append(j)
@@ -1515,12 +1464,11 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
                         # 将 j 的邻居加入待检查队列
                         for k in patch_neighbors[j]:
-                            if (k == seed_id) or (k in merged_patch_ids):
-                                continue
                             if k in unmerged and k not in neighbor_set:
                                 neighbor_set.add(k)
                                 neighbor_list.append(k)
                         neighbor_list = sorted(neighbor_list, key=lambda x: supervoxels[x]["error"])
+
                 # 生成最终平面 Discontinuity
                 # 收集合并的所有片段的点索引
                 all_points = set()

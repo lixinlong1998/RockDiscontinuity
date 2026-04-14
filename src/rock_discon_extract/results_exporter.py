@@ -2,6 +2,7 @@
 
 import csv
 import os
+import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -62,9 +63,10 @@ class ResultsExporter:
     def __init__(
             self,
             point_cloud: PointCloud,
-            discontinuities: List[Discontinuity],
-            clusters=List[PlaneClusterInfo],
-            algorithm_name: str = ""
+            discontinuities: List,
+            clusters=List,
+            algorithm_name: str = "",
+            parameters=Dict,
     ):
         self.logger = LoggerManager.GetLogger(self.__class__.__name__)
         self.point_cloud = point_cloud
@@ -72,6 +74,7 @@ class ResultsExporter:
         self.clusters = clusters
         self.algorithm_name = algorithm_name if algorithm_name else "UnknownAlgo"
         num_points = len(self.point_cloud.points)
+        self.parameters = parameters
         self.logger.info(
             f"ResultsExporter 初始化: N_points={num_points}, "
             f"N_discontinuities={len(discontinuities)}, "
@@ -92,6 +95,7 @@ class ResultsExporter:
                 - 结构面级 CSV: <basename>_discontinuitys.csv
                 - 聚类级 CSV: <basename>_clusters.csv
                 - 多边形 PLY: <basename>_polygons.ply
+                - 参数 JSON: <base_name>_parameters.json
                 - 每个结构面的独立 CSV/PLY 文件夹: <basename>_discontinuitys/
 
         实现思路:
@@ -107,7 +111,7 @@ class ResultsExporter:
                - basename_discontinuitys/
             4) 分别调用 ExportPointLevelCsv / ExportDiscontinuityLevelCsv /
                ExportClusterLevelCsv / ExportDiscontinuityPolygonsToPly /
-               ExportPerDiscontinuityFiles;
+               ExportPerDiscontinuityFiles / ExportParametersJson;
             5) 返回包含输出路径信息的字典, 便于上层记录或打印.
 
         输入:
@@ -119,7 +123,7 @@ class ResultsExporter:
         输出:
             paths: Dict[str, str]
                 包含 "dir", "points_csv", "disc_csv", "clusters_csv", "polygons_ply",
-                "discontinuity_dir", "point_cloud_path".
+                "discontinuity_dir", "point_cloud_path", "parameters_json"
         """
         base_name = os.path.splitext(os.path.basename(point_cloud_path))[0]
         out_dir = self._CreateOutputSubdir(result_root_dir, base_name)
@@ -128,6 +132,7 @@ class ResultsExporter:
         disc_csv = os.path.join(out_dir, f"{base_name}_discontinuitys.csv")
         clusters_csv = os.path.join(out_dir, f"{base_name}_clusters.csv")
         polygons_ply = os.path.join(out_dir, f"{base_name}_polygons.ply")
+        parameters_json = os.path.join(out_dir, f"{base_name}_parameters.json")
 
         # 单结构面文件夹
         discon_dir = os.path.join(out_dir, f"{base_name}_discontinuitys")
@@ -138,6 +143,7 @@ class ResultsExporter:
         self.ExportClusterLevelCsv(clusters_csv)
         self.ExportDiscontinuityPolygonsToPly(polygons_ply)
         self.ExportPerDiscontinuityFiles(discon_dir, base_name)
+        self.ExportParametersJson(parameters_json)
 
         return {
             "dir": out_dir,
@@ -147,7 +153,48 @@ class ResultsExporter:
             "polygons_ply": polygons_ply,
             "discontinuity_dir": discon_dir,
             "point_cloud_path": point_cloud_path,
+            "parameters_json": parameters_json,
+
         }
+
+    # ---------------------------------------------------------
+    # 参数 JSON 导出
+    # ---------------------------------------------------------
+    def ExportParametersJson(self, json_path: str) -> None:
+        """
+        功能简介:
+            将本次运行的算法参数导出为 JSON 文件, 便于复现实验与结果追溯。
+
+        实现思路:
+            - 将 self.parameters (dict) 直接写入 JSON。
+            - 同时补充本次导出的基本上下文信息(算法名、时间、点数、结构面数、簇数)。
+
+        输入变量:
+            json_path: str
+                输出 JSON 文件路径。
+
+        输出:
+            None
+        """
+        try:
+            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        except Exception:
+            pass
+
+        payload = {
+            "algorithm_name": self.algorithm_name,
+            "export_time": datetime.now().isoformat(timespec="seconds"),
+            "n_points": int(len(self.point_cloud.points)) if getattr(self.point_cloud, "points",
+                                                                     None) is not None else None,
+            "n_discontinuities": int(len(self.discontinuities)) if self.discontinuities is not None else 0,
+            "n_clusters": int(len(self.clusters)) if self.clusters is not None else 0,
+            "parameters": self.parameters if self.parameters is not None else {},
+        }
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        self.logger.info(f"参数 JSON 导出完成: {json_path}")
 
     # ---------------------------------------------------------
     # 点级 CSV 导出
@@ -187,7 +234,6 @@ class ResultsExporter:
 
         with Timer(f"ExportPointLevelCsv({os.path.basename(csv_path)})", self.logger):
             count_rows = 0
-
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 # 表头

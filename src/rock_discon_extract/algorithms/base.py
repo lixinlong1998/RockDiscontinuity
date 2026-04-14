@@ -39,6 +39,23 @@ class PlaneDetectionAlgorithm:
         self.logger.info(f"{self.name} {len(discontinuities)} discontinuities geometry computed.")
         return discontinuities
 
+    def get_parameters(self) -> Dict:
+        """返回当前算法对象的参数字典(用于导出/复现实验)。"""
+        params: Dict = {
+            "algo_name": self.name,
+            "algo_type": self.__class__.__name__,
+        }
+        # 约定: 只导出“公开成员变量”(不以下划线开头)，避免把日志器/缓存/中间大对象写进参数文件
+        for k, v in self.__dict__.items():
+            if k in ("logger", "name"):
+                continue
+            if k.startswith("_"):
+                continue
+            if callable(v):
+                continue
+            params[k] = _ToJsonableValue(v)
+        return params
+
 
 class PlaneClusterInfo:
     """
@@ -115,3 +132,72 @@ class ClusteringAlgorithm:
                      manual_dip_dirs: Optional[List[Tuple[float, float]]] = None,
                      ) -> Tuple[List[Discontinuity], List[PlaneClusterInfo]]:
         raise NotImplementedError
+
+    def get_parameters(self) -> Dict:
+        """返回当前算法对象的参数字典(用于导出/复现实验)。"""
+        params: Dict = {
+            "algo_name": self.name,
+            "algo_type": self.__class__.__name__,
+        }
+        for k, v in self.__dict__.items():
+            if k in ("logger", "name"):
+                continue
+            if k.startswith("_"):
+                continue
+            if callable(v):
+                continue
+            params[k] = _ToJsonableValue(v)
+        return params
+
+
+def _ToJsonableValue(value):
+    """将常见的 Python / numpy 类型转换为可 JSON 序列化的对象。
+    - 对于过大的数组/列表，仅记录 shape/len，避免输出文件爆炸。
+    """
+    try:
+        import numpy as _np
+    except Exception:
+        _np = None
+
+    # 基础标量
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+
+    # numpy 标量
+    if _np is not None and isinstance(value, _np.generic):
+        return value.item()
+
+    # numpy 数组
+    if _np is not None and isinstance(value, _np.ndarray):
+        if value.size <= 50:
+            return value.tolist()
+        return {"__type__": "ndarray", "shape": list(value.shape), "dtype": str(value.dtype), "size": int(value.size)}
+
+    # 容器
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            out[str(k)] = _ToJsonableValue(v)
+        return out
+
+    if isinstance(value, (list, tuple)):
+        if len(value) <= 50:
+            return [_ToJsonableValue(v) for v in value]
+        return {"__type__": type(value).__name__, "len": len(value)}
+
+    if isinstance(value, set):
+        value_list = list(value)
+        if len(value_list) <= 50:
+            return [_ToJsonableValue(v) for v in value_list]
+        return {"__type__": "set", "len": len(value_list)}
+
+    # pathlib.Path / os.PathLike
+    try:
+        import os as _os
+        if isinstance(value, _os.PathLike):
+            return str(value)
+    except Exception:
+        pass
+
+    # 兜底: 使用字符串表示
+    return str(value)

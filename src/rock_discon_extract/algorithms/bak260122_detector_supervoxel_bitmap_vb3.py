@@ -1,25 +1,5 @@
 # RockDiscontinuity/src/rock_discon_extract/algorithms/detector_supervoxel.py
-'''
-我改了哪些地方（只改 Step5，最小侵入）
-修改点 1（关键）：seed 必须立刻从 unmerged 移除
-原逻辑只把被吸收的 j 从 unmerged 移除，但 seed 一直留在 unmerged。这会导致两类严重后果：
-跨簇串联：后续别的 seed 生长时，可能把之前某个 seed 再吸收进去，等价于把两个本不该连通的生长簇“串”起来；
-self-merge：当合并 j 后，把 patch_neighbors[j] 加入队列时，seed_id 会被重新加入候选列表（因为 seed 还在 unmerged），于是出现 seed==neighbor 且被 “merged” 的记录（你 Step5 CSV 里已经出现了这种情况）。
-修复：进入一个 seed 生长簇时，立即 unmerged.discard(seed_id)。
-修改点 2：显式禁止 self-merge / 重复 merge
-即使修改点 1 解决了大部分 self-merge 来源，我仍然增加了硬保护：
-if (j == seed_id) or (j in merged_patch_ids): continue
-修改点 3：增加“面内距离（质心欧氏距离）”约束，抑制远距离误合并
-你指出的核心问题之一是：仅用“邻居质心到 seed 平面的法向距离”无法约束切向（面内）分离，所以即使两片段相距很远，只要在同一近似平面上，依旧可能通过 patch_distance。
-我新增了一个温和阈值：
-patch_centroid_th = max(3*voxel_size, 2*patch_distance)
-合并条件从 (ang_diff < patch_angle and dist_diff < patch_distance) 变为：
-pass_ang and pass_dist and pass_centroid
-并在 supervoxel_debug_Step5_patch_merge_records.csv 追加三列（不破坏旧列）：
-centroid_diff
-pass_patch_centroid
-patch_centroid_th
-'''
+
 from typing import List, Dict, Tuple, Set, Optional
 import math
 import os
@@ -42,469 +22,6 @@ except ImportError:
 SUPERVOXEL_DEBUG_EXPORT_DIR = r'D:\Research\20250313_RockFractureSeg\Code\RockDiscontinuity\result\supervoxel_debug_visualizer'  # 调试导出目录；为空则不导出。
 SUPERVOXEL_DEBUG_BASENAME = r'supervoxel_debug'  # 文件名前缀(可选)。
 SUPERVOXEL_DEBUG_EXPORT = True  # 开启or关闭Debug。
-SUPERVOXEL_DEBUG_EXPORT_VOXEL = False
-
-
-# -----------------------------------------------------------------------------
-# Debug / Monitoring helper functions (packed outside class for readability)
-# NOTE: These helpers MUST NOT change algorithm logic; they only wrap logging/export.
-# -----------------------------------------------------------------------------
-
-def _MonCheckInputNormals(logger, num_points: int, normals_valid: np.ndarray) -> bool:
-    """Log valid normal stats; return False if input empty (caller should exit early)."""
-    valid_normals = int(np.count_nonzero(normals_valid))
-    valid_ratio = float(valid_normals) / float(max(num_points, 1))
-    logger.info(f"[MON] Points={num_points}, ValidNormals={valid_normals} ({valid_ratio:.2%})")
-    if num_points == 0:
-        logger.warning("Supervoxel: 输入点云为空，返回空结果.")
-        return False
-    logger.info(f"SupervoxelDetector starts: {num_points} points.")
-    return True
-
-
-def _MonLogVoxelOccupancy(logger, voxel_map: Dict[Tuple[int, int, int], List[int]]) -> None:
-    """Log voxel occupancy distribution."""
-    voxel_counts = np.array([len(v) for v in voxel_map.values()], dtype=int) if len(voxel_map) > 0 else np.array([],
-                                                                                                                 dtype=int)
-    if voxel_counts.size > 0:
-        logger.info(
-            f"[MON] VoxelOcc: mean={voxel_counts.mean():.1f}, "
-            f"min={voxel_counts.min()}, p50={np.percentile(voxel_counts, 50):.0f}, max={voxel_counts.max()}"
-            f"p25={np.percentile(voxel_counts, 25):.0f}, p75={np.percentile(voxel_counts, 75):.0f}"
-        )
-
-
-def _MonLogSeedClustersAndRemain(logger, clusters: List[Dict], remain_points: Dict[Tuple[int, int, int], Set[int]],
-                                 tag: str) -> None:
-    """Log seed cluster size distribution and remain stats."""
-    if len(clusters) > 0:
-        seed_sizes = np.array([len(c.get("points", [])) for c in clusters], dtype=int)
-        logger.info(
-            f"[MON] SeedClusters: n={len(clusters)}, meanPts={seed_sizes.mean():.1f}, "
-            f"p50={np.percentile(seed_sizes, 50):.0f}, p90={np.percentile(seed_sizes, 90):.0f}, "
-            f"minPts={seed_sizes.min()}, maxPts={seed_sizes.max()}"
-        )
-    remain_total = int(sum(len(s) for s in remain_points.values()))
-    remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
-    logger.info(f"[MON] {tag}: points={remain_total}, voxels={remain_vox}")
-
-
-def _MonLogSupervoxels(logger, supervoxels: List[Dict], remain_points: Dict[Tuple[int, int, int], Set[int]],
-                       absorbed_points_total: Set[int]) -> None:
-    """Log supervoxel patch sizes and remain stats."""
-    if len(supervoxels) > 0:
-        sv_sizes = np.array([len(sv.get("points", [])) for sv in supervoxels], dtype=int)
-        logger.info(
-            f"[MON] Supervoxels: n={len(supervoxels)}, meanPts={sv_sizes.mean():.1f}, "
-            f"p50={np.percentile(sv_sizes, 50):.0f}, p90={np.percentile(sv_sizes, 90):.0f}, "
-            f"minPts={sv_sizes.min()}, maxPts={sv_sizes.max()}"
-        )
-    remain_total = int(sum(len(s) for s in remain_points.values()))
-    remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
-    logger.info(
-        f"[MON] RemainAfterStep4: points={remain_total}, voxels={remain_vox}, absorbed={len(absorbed_points_total)}")
-
-
-def _MonLogSuperGrowAggAndBitmap(
-        logger,
-        mon_sv_seeds: int,
-        mon_sv_success: int,
-        mon_sv_iters_total: int,
-        mon_sv_absorb_total: int,
-        mon_sv_best_pts_total: int,
-        mon_bitmap_calls: int,
-        mon_bitmap_inliers: int,
-        mon_bitmap_connected: int,
-        mon_bitmap_leftover: int,
-) -> None:
-    """Log aggregated supervoxel growth and bitmap filter stats."""
-    logger.info(
-        f"[MON] SuperGrowAgg: seeds={mon_sv_seeds}, success={mon_sv_success}, "
-        f"itersTotal={mon_sv_iters_total}, absorbedTotal={mon_sv_absorb_total}, "
-        f"bestPtsTotal={mon_sv_best_pts_total}"
-    )
-    try:
-        if mon_bitmap_calls > 0:
-            conn_ratio = (float(mon_bitmap_connected) / float(max(mon_bitmap_inliers, 1)))
-            logger.info(
-                f"[MON] BitmapMCC: calls={mon_bitmap_calls}, "
-                f"inliers={mon_bitmap_inliers}, connected={mon_bitmap_connected}, "
-                f"leftover={mon_bitmap_leftover}, connRatio={conn_ratio:.2%}"
-            )
-    except Exception:
-        pass
-
-
-def _MonLogPlaneSizesAndUnassigned(logger, discontinuities: List['Discontinuity'],
-                                   remain_points: Dict[Tuple[int, int, int], Set[int]]) -> None:
-    """Log final plane size distribution and remaining unassigned points."""
-    if len(discontinuities) > 0:
-        plane_sizes = np.array(
-            [len(d.segments[0].points) if (d.segments and hasattr(d.segments[0], "points")) else 0 for d in
-             discontinuities],
-            dtype=int
-        )
-        if plane_sizes.size > 0:
-            logger.info(
-                f"[MON] PlaneSizes: meanPts={plane_sizes.mean():.1f}, p50={np.percentile(plane_sizes, 50):.0f}, "
-                f"p90={np.percentile(plane_sizes, 90):.0f}, minPts={plane_sizes.min()}, maxPts={plane_sizes.max()}"
-            )
-    remain_total = int(sum(len(s) for s in remain_points.values()))
-    remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
-    logger.info(f"[MON] UnassignedRemainEnd: points={remain_total}, voxels={remain_vox}")
-
-
-def _DebugExportStep2(
-        detector,
-        debug_dir: str,
-        debug_base: str,
-        num_points: int,
-        coords: np.ndarray,
-        normals: np.ndarray,
-        rgb: np.ndarray,
-        curvature: np.ndarray,
-        clusters: List[Dict],
-        voxel_map: Dict[Tuple[int, int, int], List[int]],
-        step2_voxel_diag_records: List[Dict],
-) -> None:
-    """Export Step2 point-level colored CSVs + voxel distributions + per-voxel figures."""
-    # --- 1) Step2: voxel-patch 的两种配色方案 ---
-    # 1.1 基于 seed_id 的可复现彩色（排除纯红/纯绿/纯蓝）
-    colored_sets_id: List[Tuple[Set[int], Tuple[int, int, int]]] = []
-    for cid, c in enumerate(clusters):
-        pts = set(c.get("points", set()))
-        if len(pts) == 0:
-            continue
-        colored_sets_id.append((pts, GenerateDebugColorFromId(cid)))
-
-    drdgdb_step2_id = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=colored_sets_id
-    )
-
-    # 1.2 纯绿色（便于叠加后续步骤结构）
-    voxel_patch_all_pts: Set[int] = set()
-    for c in clusters:
-        voxel_patch_all_pts |= set(c.get("points", set()))
-
-    drdgdb_step2_green = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=[(voxel_patch_all_pts, (0, 255, 0))]
-    )
-
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step2_voxel_patch_idcolor.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step2_id)
-        detector.logger.info(f"[DEBUG] Step2 point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step2(idcolor) export failed: {e}")
-
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step2_voxel_patch_green.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step2_green)
-        detector.logger.info(f"[DEBUG] Step2 point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step2(green) export failed: {e}")
-
-    # --- 2) Step2: 每个 voxel 内 patch vs other 的分布诊断表 ---
-    try:
-        rec_path = os.path.join(debug_dir, f"{debug_base}_Step2_voxel_patch_distributions.csv")
-        if step2_voxel_diag_records:
-            fieldnames = list(step2_voxel_diag_records[0].keys())
-            detector._ExportDebugRecordsCsv(rec_path, fieldnames=fieldnames, records=step2_voxel_diag_records)
-            detector.logger.info(f"[DEBUG] Step2 voxel-distributions CSV exported: {rec_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step2 voxel-distributions export failed: {e}")
-
-    # --- 3) Step2: 为每个 voxel 绘制 dipdir_rose 与 points_stereonet_kde ---
-    if SUPERVOXEL_DEBUG_EXPORT_VOXEL:
-        try:
-            from ..visualizer import ResultsVisualizer  # 延迟导入，避免非调试运行时引入绘图依赖
-            voxel_csv_dir = os.path.join(debug_dir, f"{debug_base}_Step2_voxels_csv")
-            voxel_fig_dir = os.path.join(debug_dir, f"{debug_base}_Step2_voxel_figs")
-            os.makedirs(voxel_csv_dir, exist_ok=True)
-            os.makedirs(voxel_fig_dir, exist_ok=True)
-
-            voxel_csv_paths_list: List[str] = []
-            for vid, vid_indices in voxel_map.items():
-                if vid_indices is None:
-                    continue
-                if len(vid_indices) < 10:
-                    continue
-                vx, vy, vz = vid
-                voxel_csv_path = os.path.join(voxel_csv_dir, f"{debug_base}_voxel_{vx}_{vy}_{vz}.csv")
-                detector._ExportDebugPointLevelCsvSubset(
-                    csv_path=voxel_csv_path,
-                    indices=vid_indices,
-                    coords=coords,
-                    normals=normals,
-                    rgb=rgb,
-                    curvature=curvature
-                )
-                voxel_csv_paths_list.append(voxel_csv_path)
-
-            if voxel_csv_paths_list:
-                paths_list = [(voxel_fig_dir, csv_file_path) for csv_file_path in voxel_csv_paths_list]
-                viz = ResultsVisualizer(paths_list=paths_list)
-                viz.ExportAllSingleAnalysis(
-                    plots_name=["points_stereonet_kde"],
-                    output_formats=("png",),
-                    show=False
-                )
-                detector.logger.info(f"[DEBUG] Step2 voxel figures exported: {voxel_fig_dir}")
-        except Exception as e:
-            detector.logger.warning(f"[DEBUG] Step2 voxel-figures export failed: {e}")
-
-
-def _DebugExportStep3(
-        detector,
-        debug_dir: str,
-        debug_base: str,
-        num_points: int,
-        coords: np.ndarray,
-        normals: np.ndarray,
-        rgb: np.ndarray,
-        curvature: np.ndarray,
-        clusters: List[Dict],
-        n_voxel_seeds_step2: int,
-        edge_patch_new_points: Set[int],
-        edge_patch_merged_points: Set[int],
-        edge_merge_records: List[Dict],
-) -> None:
-    """Export Step3 point-level colored CSVs + edge merge diagnostics."""
-    # ========== Step3 配色方案 A ==========
-    colored_sets_step3_a: List[Tuple[Set[int], Tuple[int, int, int]]] = []
-    for cid, c in enumerate(clusters[:n_voxel_seeds_step2]):
-        pts = set(c.get("points", set()))
-        if len(pts) == 0:
-            continue
-        colored_sets_step3_a.append((pts, GenerateDebugColorFromId(cid)))
-    colored_sets_step3_a.append((edge_patch_new_points, (0, 0, 255)))
-
-    drdgdb_step3_a = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=colored_sets_step3_a
-    )
-
-    # ========== Step3 配色方案 B ==========
-    voxel_pts_all: Set[int] = set()
-    for c in clusters[:n_voxel_seeds_step2]:
-        voxel_pts_all |= set(c.get("points", set()))
-    voxel_pts_green = voxel_pts_all - set(edge_patch_merged_points)
-
-    drdgdb_step3_b = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=[
-            (voxel_pts_green, (0, 255, 0)),
-            (edge_patch_new_points, (0, 0, 255)),
-            (edge_patch_merged_points, (0, 255, 255)),
-        ]
-    )
-
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step3_edge_patch_blue_mergeToVoxelColor.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step3_a)
-        detector.logger.info(f"[DEBUG] Step3(A) point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step3(A) export failed: {e}")
-
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step3_edge_patch_greenBlueCyan.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step3_b)
-        detector.logger.info(f"[DEBUG] Step3(B) point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step3(B) export failed: {e}")
-
-    try:
-        rec_path = os.path.join(debug_dir, f"{debug_base}_Step3_edge_merge_records.csv")
-        detector._ExportDebugRecordsCsv(
-            rec_path,
-            fieldnames=[
-                "voxel_id",
-                "edge_patch_points",
-                "merged",
-                "merge_reason",
-                "best_candidate_cluster_idx",
-                "best_candidate_voxel_id",
-                "best_mw",
-                "best_nw",
-                "best_score_Pw",
-                "pass_score_Pw",
-                "best_pass_cluster_idx",
-                "pass_edge_distance",
-                "pass_edge_angle",
-                "edge_distance",
-                "edge_angle",
-            ],
-            records=edge_merge_records
-        )
-        detector.logger.info(f"[DEBUG] Step3 merge-records CSV exported: {rec_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step3 merge-records export failed: {e}")
-
-
-def _DebugExportStep4(
-        detector,
-        debug_dir: str,
-        debug_base: str,
-        num_points: int,
-        coords: np.ndarray,
-        normals: np.ndarray,
-        rgb: np.ndarray,
-        curvature: np.ndarray,
-        clusters: List[Dict],
-        n_voxel_seeds_step2: int,
-        edge_patch_new_points: Set[int],
-        edge_patch_merged_points: Set[int],
-        absorbed_sets_with_color: List[Tuple[Set[int], Tuple[int, int, int]]],
-        absorbed_points_total: Set[int],
-        supervoxels: List[Dict],
-        supervoxel_growth_records: List[Dict],
-) -> None:
-    """Export Step4 multi-scheme point-level CSVs + supervoxel growth diagnostics.
-        1) Supervoxel growth diagnostics table:
-            - {debug_base}_Step4_supervoxel_growth_records.csv
-
-        2) Per-supervoxel CSVs (for CloudCompare query / localization):
-            - folder: {debug_base}_Step5_supervoxels_csv
-            - file:   {debug_base}_supervoxel_<id>.csv
-    """
-    # ========== Step4 配色方案 1 ==========
-    drdgdb_step4_absorbed_seedcolor = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=absorbed_sets_with_color
-    )
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step4_absorbed_seedcolor.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step4_absorbed_seedcolor)
-        detector.logger.info(f"[DEBUG] Step4(1) point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step4(1) export failed: {e}")
-
-    # ========== Step4 配色方案 2 ==========
-    voxel_pts_all: Set[int] = set()
-    for c in clusters[:n_voxel_seeds_step2]:
-        voxel_pts_all |= set(c.get("points", set()))
-    voxel_pts_green = voxel_pts_all - set(edge_patch_merged_points)
-
-    drdgdb_step4_absorbed_red_with_prior = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=[
-            (voxel_pts_green, (0, 255, 0)),
-            (edge_patch_new_points, (0, 0, 255)),
-            (edge_patch_merged_points, (0, 255, 255)),
-            (absorbed_points_total, (255, 0, 0)),
-        ]
-    )
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step4_absorbed_red_with_prior.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature,
-                                           drdgdb_step4_absorbed_red_with_prior)
-        detector.logger.info(f"[DEBUG] Step4(2) point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step4(2) export failed: {e}")
-
-    # ========== Step4 配色方案 3 ==========
-    colored_sets_step4_patches: List[Tuple[Set[int], Tuple[int, int, int]]] = []
-    for sid, sv in enumerate(supervoxels):
-        pts = set(sv.get("points", set()))
-        if len(pts) == 0:
-            continue
-        colored_sets_step4_patches.append((pts, GenerateDebugColorFromId(sid)))
-
-    drdgdb_step4_patches_idcolor = detector._FillDrDgDbBySets(
-        num_points=num_points,
-        default_rgb=(160, 160, 160),
-        colored_sets=colored_sets_step4_patches
-    )
-    try:
-        csv_path = os.path.join(debug_dir, f"{debug_base}_Step4_supervoxel_patches_idcolor.csv")
-        detector._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step4_patches_idcolor)
-        detector.logger.info(f"[DEBUG] Step4(3) point-level CSV exported: {csv_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step4(3) export failed: {e}")
-
-    # --- (A) Step4 supervoxel_growth_records CSV exports ---
-    try:
-        rec_path = os.path.join(debug_dir, f"{debug_base}_Step4_supervoxel_growth_records.csv")
-        detector._ExportDebugRecordsCsv(
-            rec_path,
-            fieldnames=[
-                "seed_idx",
-                "seed_type",
-                "seed_points",
-                "best_points",
-                "absorbed_points",
-                "cand_points_seen",
-                "iters",
-                "init_dist_th",
-                "init_ang_th",
-                "distance_step",
-                "angle_step",
-                "final_dist_th",
-                "final_ang_th",
-                "orient_diff",
-                "orient_diff_last",
-                "max_refit_error",
-                "fallback_used",
-                "fallback_reason",
-                "blocked_by_max_refit_error",
-                "success",
-            ],
-            records=supervoxel_growth_records
-        )
-        detector.logger.info(f"[DEBUG] Step4 growth-records CSV exported: {rec_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step4 growth-records export failed: {e}")
-
-    # --- (B) Step4 per-supervoxel CSV exports ---
-    try:
-        sv_csv_dir = os.path.join(debug_dir, f"{debug_base}_Step4_supervoxels_csv")
-        os.makedirs(sv_csv_dir, exist_ok=True)
-
-        if supervoxels:
-            for sid, sv in enumerate(supervoxels):
-                pts = sv.get("points", None)
-                if pts is None:
-                    continue
-                if isinstance(pts, set):
-                    idx = np.array(list(pts), dtype=np.int64)
-                else:
-                    idx = np.asarray(list(pts), dtype=np.int64).reshape(-1)
-
-                if idx.size == 0:
-                    continue
-
-                csv_path = os.path.join(sv_csv_dir, f"{debug_base}_supervoxel_{sid}.csv")
-                detector._ExportDebugPointLevelCsvSubset(
-                    csv_path=csv_path,
-                    indices=idx,
-                    coords=coords,
-                    normals=normals,
-                    rgb=rgb,
-                    curvature=curvature
-                )
-        detector.logger.info(f"[DEBUG] Step4 supervoxel CSVs exported: {sv_csv_dir}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step4 supervoxel-csv export failed: {e}")
-
-
-def _DebugExportStep5(detector, debug_dir: str, debug_base: str, patch_merge_records: List[Dict]) -> None:
-    """Export Step5 patch-merge diagnostics table."""
-    try:
-        rec_path = os.path.join(debug_dir, f"{debug_base}_Step5_patch_merge_records.csv")
-        if patch_merge_records:
-            fieldnames = list(patch_merge_records[0].keys())
-            detector._ExportDebugRecordsCsv(rec_path, fieldnames=fieldnames, records=patch_merge_records)
-            detector.logger.info(f"[DEBUG] Step5 patch-merge-records CSV exported: {rec_path}")
-    except Exception as e:
-        detector.logger.warning(f"[DEBUG] Step5 patch-merge-records export failed: {e}")
 
 
 class SupervoxelDetector(PlaneDetectionAlgorithm):
@@ -715,18 +232,19 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
         coords, normals, rgb, curvature = get_point_cloud_data(point_cloud)  # (N, 3)
         num_points = coords.shape[0]
-
-        # -------------------------
-        # Debug export config (Step2-5)
-        # -------------------------
-        debug_dir, debug_base, debug_enabled = self._GetDebugExportConfig()
         normals_valid = ~np.isnan(normals).any(axis=1)
 
         # -------------------------
         # Monitoring: 有效法向数量和比例
         # -------------------------
-        if not _MonCheckInputNormals(self.logger, num_points=num_points, normals_valid=normals_valid):
+        valid_normals = int(np.count_nonzero(normals_valid))
+        valid_ratio = float(valid_normals) / float(max(num_points, 1))
+        self.logger.info(f"[MON] Points={num_points}, ValidNormals={valid_normals} ({valid_ratio:.2%})")
+        if num_points == 0:
+            self.logger.warning("Supervoxel: 输入点云为空，返回空结果.")
             return []
+        else:
+            self.logger.info(f"SupervoxelDetector starts: {num_points} points.")
 
         # -------------------------
         # Step 1: 点云体素化
@@ -747,18 +265,20 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
         self.logger.info(f"Voxelization: generated {len(voxel_map)} voxels with size {self.voxel_size:.3f} m.")
 
         # Monitoring: voxel occupancy stats
-        _MonLogVoxelOccupancy(self.logger, voxel_map)
+        voxel_counts = np.array([len(v) for v in voxel_map.values()], dtype=int) if len(voxel_map) > 0 else np.array([],
+                                                                                                                     dtype=int)
+        if voxel_counts.size > 0:
+            self.logger.info(
+                f"[MON] VoxelOcc: mean={voxel_counts.mean():.1f}, "
+                f"min={voxel_counts.min()}, p50={np.percentile(voxel_counts, 50):.0f}, max={voxel_counts.max()}"
+                f"p25={np.percentile(voxel_counts, 25):.0f}, p75={np.percentile(voxel_counts, 75):.0f}"
+            )
 
         # -------------------------
         # Step 2: 体素内局部 RANSAC 提取 voxel-patch
         # -------------------------
         clusters: List[Dict] = []  # 每个 cluster 是一个初始平面片 (voxel-patch 或 edge-patch)
         remain_points: Dict[Tuple[int, int, int], Set[int]] = {}
-
-        # Debug bookkeeping (Step2): voxel 内 patch vs other 的分布诊断 + voxel 级绘图
-        step2_voxel_diag_records: List[Dict] = []
-        step2_voxel_csv_paths: List[str] = []
-        n_voxel_seeds_step2: int = 0
         with Timer("Supervoxel: Initial voxel-plane extraction", self.logger):
             for voxel_id, pts_indices_list in voxel_map.items():
                 pts_indices = np.array(pts_indices_list, dtype=int)
@@ -805,59 +325,6 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                 inlier_set = set(filtered_inliers_global.tolist())
                 remain_set = set(pts_indices.tolist()) - inlier_set
 
-                # Debug: Step2 voxel 内 patch vs other 的法向/曲率/到平面距离分布诊断（每 voxel 一条）
-                if debug_enabled:
-                    try:
-                        stats_patch = self._ComputeVoxelDistributionStats(
-                            coords=coords,
-                            normals=normals,
-                            curvature=curvature,
-                            indices=list(inlier_set),
-                            plane_normal=plane_normal,
-                            plane_d=float(d),
-                            normals_valid=normals_valid
-                        )
-                        stats_other = self._ComputeVoxelDistributionStats(
-                            coords=coords,
-                            normals=normals,
-                            curvature=curvature,
-                            indices=list(remain_set),
-                            plane_normal=plane_normal,
-                            plane_d=float(d),
-                            normals_valid=normals_valid
-                        )
-                        rec = {
-                            "voxel_id": str(voxel_id),
-                            "n_total": int(pts_indices.size),
-                            "n_patch": int(len(inlier_set)),
-                            "n_other": int(len(remain_set)),
-                            "plane_a": float(a),
-                            "plane_b": float(b),
-                            "plane_c": float(c),
-                            "plane_d": float(d),
-                        }
-                        # patch stats
-                        for k, v in stats_patch.items():
-                            rec[f"patch_{k}"] = v
-                        # other stats
-                        for k, v in stats_other.items():
-                            rec[f"other_{k}"] = v
-                        # differences: other - patch
-                        for k in stats_patch.keys():
-                            pv = stats_patch.get(k, float("nan"))
-                            ov = stats_other.get(k, float("nan"))
-                            if (pv is None) or (ov is None):
-                                rec[f"diff_{k}"] = float("nan")
-                            else:
-                                try:
-                                    rec[f"diff_{k}"] = float(ov) - float(pv)
-                                except Exception:
-                                    rec[f"diff_{k}"] = float("nan")
-
-                        step2_voxel_diag_records.append(rec)
-                    except Exception as _e:
-                        pass
-
                 if len(inlier_set) < self.min_plane_points:
                     # 平面内点太少, 整体视为剩余点
                     remain_points[voxel_id] = set(pts_indices.tolist())
@@ -875,33 +342,47 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
             for vid in voxel_map.keys():
                 remain_points.setdefault(vid, set())
 
-        n_voxel_seeds_step2 = int(len(clusters))
-
         self.logger.info(
             f"Initial voxel-plane extraction: {len(clusters)} plane seeds, "
             f"{sum(len(s) for s in remain_points.values())} remain points."
         )
 
         # Monitoring: seed cluster size & remain stats
-        _MonLogSeedClustersAndRemain(self.logger, clusters=clusters, remain_points=remain_points,
-                                     tag="RemainAfterStep2")
-        # -------------------------
-        # Debug export (Step2): voxel-patch 可视化 / voxel 内分布诊断表 / voxel 级图件
-        # -------------------------
-        if debug_enabled:
-            _DebugExportStep2(
-                detector=self,
-                debug_dir=debug_dir,
-                debug_base=debug_base,
-                num_points=num_points,
-                coords=coords,
-                normals=normals,
-                rgb=rgb,
-                curvature=curvature,
-                clusters=clusters,
-                voxel_map=voxel_map,
-                step2_voxel_diag_records=step2_voxel_diag_records,
+        if len(clusters) > 0:
+            seed_sizes = np.array([len(c.get("points", [])) for c in clusters], dtype=int)
+            self.logger.info(
+                f"[MON] SeedClusters: n={len(clusters)}, meanPts={seed_sizes.mean():.1f}, "
+                f"p50={np.percentile(seed_sizes, 50):.0f}, p90={np.percentile(seed_sizes, 90):.0f}, "
+                f"minPts={seed_sizes.min()}, maxPts={seed_sizes.max()}"
             )
+        remain_total = int(sum(len(s) for s in remain_points.values()))
+        remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
+        self.logger.info(f"[MON] RemainAfterStep2: points={remain_total}, voxels={remain_vox}")
+        # -------------------------
+        # Debug export (Step2): voxel-patch 可视化
+        # -------------------------
+        debug_dir, debug_base, debug_enabled = self._GetDebugExportConfig()
+        if debug_enabled:
+            # 彩色: 每个 voxel-patch (cluster) 一个稳定颜色；灰色: 其它
+            colored_sets_step2 = []
+            for cid, c in enumerate(clusters):
+                pts = set(c.get("points", set()))
+                if len(pts) == 0:
+                    continue
+                colored_sets_step2.append((pts, GenerateDebugColorFromId(cid)))  # 彩色
+                # colored_sets_step2.append((pts, (0, 255, 0)))   # 绿色
+
+            drdgdb_step2 = self._FillDrDgDbBySets(
+                num_points=num_points,
+                default_rgb=(160, 160, 160),
+                colored_sets=colored_sets_step2
+            )
+            try:
+                csv_path = os.path.join(debug_dir, f"{debug_base}_Step2_voxel_patch.csv")
+                self._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step2)
+                self.logger.info(f"[DEBUG] Step2 point-level CSV exported: {csv_path}")
+            except Exception as e:
+                self.logger.warning(f"[DEBUG] Step2 export failed: {e}")
 
         # -------------------------
         # Step 3: 边缘平面提取 (edge-patch) 与拼接
@@ -1052,27 +533,20 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
                         # 记录 Step3 的“为什么没拼接”信息（每个 edge-patch 一条）
                         try:
-                            best_candidate_voxel_id = ""
+                            best_seed_type = ""
                             if best_any_idx is not None and 0 <= best_any_idx < len(clusters):
-                                cand_voxels = clusters[best_any_idx].get("voxel_ids", None)
-                                if cand_voxels and len(cand_voxels) > 0:
-                                    best_candidate_voxel_id = str(cand_voxels[0])
+                                best_seed_type = str(clusters[best_any_idx].get("seed_type", ""))
                             edge_merge_records.append({
                                 "voxel_id": str(voxel_id),
                                 "edge_patch_points": int(len(inlier_set)),
                                 "merged": int(1 if merged else 0),
                                 "merge_reason": merge_reason,
                                 "best_candidate_cluster_idx": int(best_any_idx) if best_any_idx is not None else -1,
-                                "best_candidate_voxel_id": best_candidate_voxel_id,
+                                "best_candidate_seed_type": best_seed_type,
                                 "best_mw": float(best_any_mw) if np.isfinite(best_any_mw) else float("inf"),
                                 "best_nw": float(best_any_nw) if np.isfinite(best_any_nw) else float("inf"),
                                 "best_score_Pw": float(best_any_score) if np.isfinite(best_any_score) else float("inf"),
                                 "pass_score_Pw": float(best_pass_sim) if np.isfinite(best_pass_sim) else float("inf"),
-                                "best_pass_cluster_idx": int(best_pass_idx) if best_pass_idx is not None else -1,
-                                "pass_edge_distance": int(1 if (np.isfinite(best_any_mw) and (
-                                        best_any_mw < float(self.edge_distance))) else 0),
-                                "pass_edge_angle": int(
-                                    1 if (np.isfinite(best_any_nw) and (best_any_nw < float(self.edge_angle))) else 0),
                                 "edge_distance": float(self.edge_distance),
                                 "edge_angle": float(self.edge_angle),
                             })
@@ -1091,28 +565,54 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
         self.logger.info(f"Edge patch extraction: clusters extended to {len(clusters)} seeds.")
 
         # Monitoring: remain stats after edge extraction
-        _MonLogSeedClustersAndRemain(self.logger, clusters=[], remain_points=remain_points, tag="RemainAfterStep3")
+        remain_total = int(sum(len(s) for s in remain_points.values()))
+        remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
+        self.logger.info(f"[MON] RemainAfterStep3: points={remain_total}, voxels={remain_vox}")
 
         # -------------------------
-
-        # Debug export (Step3): edge-patch 可视化 + “为什么没拼接”阈值诊断表
+        # Debug export (Step3): edge-patch 可视化 + 拼接拦截阈值表
         # -------------------------
-        if debug_enabled:
-            _DebugExportStep3(
-                detector=self,
-                debug_dir=debug_dir,
-                debug_base=debug_base,
+        if debug_enabled:  # TODO 再好好设计一下可视化,分为逐步的和每步的结果
+            # 纯蓝: 新建 edge-patch；蓝绿色: 并入已有 patch；灰色: 其它
+            drdgdb_step3 = self._FillDrDgDbBySets(
                 num_points=num_points,
-                coords=coords,
-                normals=normals,
-                rgb=rgb,
-                curvature=curvature,
-                clusters=clusters,
-                n_voxel_seeds_step2=n_voxel_seeds_step2,
-                edge_patch_new_points=edge_patch_new_points,
-                edge_patch_merged_points=edge_patch_merged_points,
-                edge_merge_records=edge_merge_records,
+                default_rgb=(160, 160, 160),
+                colored_sets=[
+                    (edge_patch_new_points, (0, 0, 255)),
+                    (edge_patch_merged_points, (0, 255, 255)),
+                ]
             )
+            try:
+                csv_path = os.path.join(debug_dir, f"{debug_base}_Step3_edge_patch.csv")
+                self._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step3)
+                self.logger.info(f"[DEBUG] Step3 point-level CSV exported: {csv_path}")
+            except Exception as e:
+                self.logger.warning(f"[DEBUG] Step3 export failed: {e}")
+
+            # 导出“为什么没拼接”记录表
+            try:
+                rec_path = os.path.join(debug_dir, f"{debug_base}_Step3_edge_merge_records.csv")
+                self._ExportDebugRecordsCsv(
+                    rec_path,
+                    fieldnames=[
+                        "voxel_id",
+                        "edge_patch_points",
+                        "merged",
+                        "merge_reason",
+                        "best_candidate_cluster_idx",
+                        "best_candidate_seed_type",
+                        "best_mw",
+                        "best_nw",
+                        "best_score_Pw",
+                        "pass_score_Pw",
+                        "edge_distance",
+                        "edge_angle",
+                    ],
+                    records=edge_merge_records
+                )
+                self.logger.info(f"[DEBUG] Step3 merge-records CSV exported: {rec_path}")
+            except Exception as e:
+                self.logger.warning(f"[DEBUG] Step3 merge-records export failed: {e}")
 
         # -------------------------
         # Step 4: 超体素分割 (Supervoxel segmentation)
@@ -1121,7 +621,6 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
         # Debug bookkeeping (Step4): 记录“被吸纳点”与每个 seed 的阈值收缩过程摘要
         absorbed_points_total: Set[int] = set()
-        absorbed_sets_with_color: List[Tuple[Set[int], Tuple[int, int, int]]] = []
         supervoxel_growth_records: List[Dict] = []
 
         # Monitoring: supervoxel growth summary (aggregate)
@@ -1231,28 +730,16 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                             ang_th = 0.0
 
                 # 构建 supervoxel patch 结果
-                orientation_diff_last = float(orientation_diff)
-                fallback_used = False
-                fallback_reason = ""
                 if len(best_points_set) == 0:
-                    # 未能在阈值收缩过程中达到 max_refit_error（或中途点数不足），沿用 seed 自身点集
                     best_points_set = set(cluster["points"])
                     best_normal = record_normal
                     best_d = record_d
-                    fallback_used = True
-                    if not np.isfinite(orientation_diff_last):
-                        fallback_reason = "no_valid_refit"
-                    else:
-                        fallback_reason = "blocked_by_max_refit_error"
-                    # 注意：为保持原算法行为，这里仍将 orientation_diff 置为 0（仅用于后续排序/输出的 patch error）。
                     orientation_diff = 0.0
 
                 # Debug: 统计本 seed 的“新增吸纳点”（用于 Step4 可视化）
                 try:
                     absorbed_this_seed = set(best_points_set) - set(seed_points_base)
                     absorbed_points_total.update(absorbed_this_seed)
-                    if len(absorbed_this_seed) > 0:
-                        absorbed_sets_with_color.append((set(absorbed_this_seed), GenerateDebugColorFromId(ci)))
                 except Exception:
                     absorbed_this_seed = set()
 
@@ -1260,8 +747,7 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                 mon_sv_iters_total += int(mon_seed_iters)
                 mon_sv_absorb_total += int(mon_seed_absorbed)
                 mon_sv_best_pts_total += int(len(best_points_set))
-                if (('fallback_used' in locals()) and (not fallback_used) and (
-                        orientation_diff <= self.max_refit_error)):
+                if orientation_diff <= self.max_refit_error:
                     mon_sv_success += 1
                 if mon_verbose:
                     self.logger.info(
@@ -1280,23 +766,11 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                         "absorbed_points": int(len(absorbed_this_seed)) if 'absorbed_this_seed' in locals() else 0,
                         "cand_points_seen": int(mon_seed_cand),
                         "iters": int(mon_seed_iters),
-                        "init_dist_th": float(self.super_distance),
-                        "init_ang_th": float(self.super_angle),
-                        "distance_step": float(self.distance_step),
-                        "angle_step": float(self.angle_step),
                         "final_dist_th": float(dist_th),
                         "final_ang_th": float(ang_th),
                         "orient_diff": float(orientation_diff),
-                        "orient_diff_last": float(
-                            orientation_diff_last) if 'orientation_diff_last' in locals() else float("inf"),
                         "max_refit_error": float(self.max_refit_error),
-                        "fallback_used": int(1 if ('fallback_used' in locals() and fallback_used) else 0),
-                        "fallback_reason": str(fallback_reason) if 'fallback_reason' in locals() else "",
-                        "blocked_by_max_refit_error": int(1 if (
-                                'fallback_used' in locals() and fallback_used and np.isfinite(
-                            orientation_diff_last) and (orientation_diff_last > self.max_refit_error)) else 0),
-                        "success": int(1 if (('fallback_used' in locals()) and (not fallback_used) and (
-                                orientation_diff <= self.max_refit_error)) else 0),
+                        "success": int(1 if orientation_diff <= self.max_refit_error else 0),
                     })
                 except Exception:
                     pass
@@ -1321,49 +795,80 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
         self.logger.info(f"Supervoxel segmentation: generated {len(supervoxels)} supervoxel patches.")
 
         # Monitoring: supervoxel summary & remain stats
-        _MonLogSupervoxels(self.logger, supervoxels=supervoxels, remain_points=remain_points,
-                           absorbed_points_total=absorbed_points_total)
+        if len(supervoxels) > 0:
+            sv_sizes = np.array([len(sv.get("points", [])) for sv in supervoxels], dtype=int)
+            self.logger.info(
+                f"[MON] Supervoxels: n={len(supervoxels)}, meanPts={sv_sizes.mean():.1f}, "
+                f"p50={np.percentile(sv_sizes, 50):.0f}, p90={np.percentile(sv_sizes, 90):.0f}, "
+                f"minPts={sv_sizes.min()}, maxPts={sv_sizes.max()}"
+            )
+        remain_total = int(sum(len(s) for s in remain_points.values()))
+        remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
+        self.logger.info(f"[MON] RemainAfterStep4: points={remain_total}, voxels={remain_vox}")
 
-        # Debug export (Step4): 多方案可视化 + seed 生长阈值摘要表
+        # -------------------------
+        # Debug export (Step4): supervoxel 生长“吸纳点”可视化 + 每个seed阈值摘要
         # -------------------------
         if debug_enabled:
-            _DebugExportStep4(
-                detector=self,
-                debug_dir=debug_dir,
-                debug_base=debug_base,
+            # 红色: 被吸纳点；灰色: 其它
+            drdgdb_step4 = self._FillDrDgDbBySets(
                 num_points=num_points,
-                coords=coords,
-                normals=normals,
-                rgb=rgb,
-                curvature=curvature,
-                clusters=clusters,
-                n_voxel_seeds_step2=n_voxel_seeds_step2,
-                edge_patch_new_points=edge_patch_new_points,
-                edge_patch_merged_points=edge_patch_merged_points,
-                absorbed_sets_with_color=absorbed_sets_with_color,
-                absorbed_points_total=absorbed_points_total,
-                supervoxels=supervoxels,
-                supervoxel_growth_records=supervoxel_growth_records,
+                default_rgb=(160, 160, 160),
+                colored_sets=[(absorbed_points_total, (255, 0, 0))]
             )
+            try:
+                csv_path = os.path.join(debug_dir, f"{debug_base}_Step4_supervoxel_absorbed.csv")
+                self._ExportDebugPointLevelCsv(csv_path, coords, normals, rgb, curvature, drdgdb_step4)
+                self.logger.info(f"[DEBUG] Step4 point-level CSV exported: {csv_path}")
+            except Exception as e:
+                self.logger.warning(f"[DEBUG] Step4 export failed: {e}")
 
-        _MonLogSuperGrowAggAndBitmap(
-            logger=self.logger,
-            mon_sv_seeds=mon_sv_seeds,
-            mon_sv_success=mon_sv_success,
-            mon_sv_iters_total=mon_sv_iters_total,
-            mon_sv_absorb_total=mon_sv_absorb_total,
-            mon_sv_best_pts_total=mon_sv_best_pts_total,
-            mon_bitmap_calls=int(getattr(self, "_mon_bitmap_calls", 0)),
-            mon_bitmap_inliers=int(getattr(self, "_mon_bitmap_inliers", 0)),
-            mon_bitmap_connected=int(getattr(self, "_mon_bitmap_connected", 0)),
-            mon_bitmap_leftover=int(getattr(self, "_mon_bitmap_leftover", 0)),
+            try:
+                rec_path = os.path.join(debug_dir, f"{debug_base}_Step4_supervoxel_growth_records.csv")
+                self._ExportDebugRecordsCsv(
+                    rec_path,
+                    fieldnames=[
+                        "seed_idx",
+                        "seed_type",
+                        "seed_points",
+                        "best_points",
+                        "absorbed_points",
+                        "cand_points_seen",
+                        "iters",
+                        "final_dist_th",
+                        "final_ang_th",
+                        "orient_diff",
+                        "max_refit_error",
+                        "success",
+                    ],
+                    records=supervoxel_growth_records
+                )
+                self.logger.info(f"[DEBUG] Step4 growth-records CSV exported: {rec_path}")
+            except Exception as e:
+                self.logger.warning(f"[DEBUG] Step4 growth-records export failed: {e}")
+
+        self.logger.info(
+            f"[MON] SuperGrowAgg: seeds={mon_sv_seeds}, success={mon_sv_success}, "
+            f"itersTotal={mon_sv_iters_total}, absorbedTotal={mon_sv_absorb_total}, "
+            f"bestPtsTotal={mon_sv_best_pts_total}"
         )
+        # bitmap filter aggregated stats
+        try:
+            if self._mon_bitmap_calls > 0:
+                conn_ratio = (float(self._mon_bitmap_connected) / float(max(self._mon_bitmap_inliers, 1)))
+                self.logger.info(
+                    f"[MON] BitmapMCC: calls={self._mon_bitmap_calls}, "
+                    f"inliers={self._mon_bitmap_inliers}, connected={self._mon_bitmap_connected}, "
+                    f"leftover={self._mon_bitmap_leftover}, connRatio={conn_ratio:.2%}"
+                )
+        except Exception:
+            pass
 
         # -------------------------
         # Step 5: Patch-based 区域生长
         # -------------------------
         discontinuities: List[Discontinuity] = []
-        patch_merge_records: List[Dict] = []
+
         with Timer("Supervoxel: Patch-based region growing", self.logger):
             n_patches = len(supervoxels)
             if n_patches == 0:
@@ -1396,103 +901,45 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
             unmerged: Set[int] = set(range(n_patches))
             patch_order = sorted(unmerged, key=lambda i: supervoxels[i]["error"])
 
-            unmerged: Set[int] = set(range(n_patches))
-            patch_order = sorted(unmerged, key=lambda i: supervoxels[i]["error"])
-
-            # 关键修正(防误合并): 仅用“质心到平面距离”无法约束面内(切向)分离，
-            # 这里增加一个温和的空间邻近约束，避免“同一平面但相距很远”的片段被直接合并。
-            # 阈值取 max(3*voxel_size, 2*patch_distance)，既兼容 voxel_size=1.5m 的工程设置，
-            # 也不让 patch_distance 很小时阈值过于苛刻。
-            patch_centroid_th = max(self.voxel_size * 3.0, self.patch_distance * 2.0)
-
             while patch_order:
-                seed_id = patch_order.pop(0)
+                seed_id = patch_order[0]
+                patch_order.remove(seed_id)
                 if seed_id not in unmerged:
                     continue
-
-                # -------------------------
-                # 关键修正1：seed 一旦作为当前生长簇的起点，必须立即从 unmerged 中移除。
-                # 否则会出现：
-                #   (a) seed 被后续其他 seed 二次吸收，导致跨簇“串联”远距离误合并；
-                #   (b) seed 被加入 neighbor_list 产生 self-merge (seed==neighbor) 的错误记录。
-                # -------------------------
-                unmerged.discard(seed_id)
 
                 seed_patch = supervoxels[seed_id]
                 seed_normal = np.array(seed_patch["normal"], dtype=float)
                 seed_d = float(seed_patch["d"])
 
-                neighbor_set = {nid for nid in patch_neighbors[seed_id] if (nid in unmerged and nid != seed_id)}
+                neighbor_set = {nid for nid in patch_neighbors[seed_id] if nid in unmerged}
                 neighbor_list = sorted(list(neighbor_set), key=lambda j: supervoxels[j]["error"])
 
                 merged_patch_ids = [seed_id]
 
                 while neighbor_list:
-                    j = neighbor_list.pop(0)
+                    j = neighbor_list[0]
+                    neighbor_list.pop(0)
                     if j not in unmerged:
-                        continue
-                    # 关键修正2：严禁 self-merge / 重复 merge
-                    if (j == seed_id) or (j in merged_patch_ids):
                         continue
 
                     j_patch = supervoxels[j]
                     j_normal = np.array(j_patch["normal"], dtype=float)
 
                     # 法向夹角
-                    cos_angle = float(np.clip(np.abs(seed_normal.dot(j_normal)), -1.0, 1.0))
+                    cos_angle = float(np.clip(
+                        np.abs(seed_normal.dot(j_normal)), -1.0, 1.0
+                    ))
                     ang_diff = math.degrees(math.acos(cos_angle))
 
-                    # 距离差: 邻居 patch 质心到 seed 平面的距离 (法向方向)
+                    # 距离差: 邻居 patch 质心到 seed 平面的距离
                     j_points = coords[list(j_patch["points"])]
                     if j_points.size > 0:
                         j_centroid = j_points.mean(axis=0)
                         dist_diff = abs(seed_normal.dot(j_centroid) + seed_d)
                     else:
-                        j_centroid = np.array([0.0, 0.0, 0.0], dtype=float)
                         dist_diff = 0.0
 
-                    # 额外的空间邻近约束：两片段质心欧氏距离
-                    seed_points_now = coords[list(seed_patch["points"])]
-                    seed_centroid = seed_points_now.mean(axis=0) if seed_points_now.size > 0 else j_centroid
-                    centroid_diff = float(np.linalg.norm(seed_centroid - j_centroid))
-
-                    pass_ang = bool(ang_diff < self.patch_angle)
-                    pass_dist = bool(dist_diff < self.patch_distance)
-                    pass_centroid = bool(centroid_diff < patch_centroid_th)
-
-                    # Debug: Patch-based 区域生长阈值诊断（到底被哪个阈值拦截）
-                    if debug_enabled:
-                        try:
-                            if pass_ang and pass_dist and pass_centroid:
-                                reason = "merged"
-                            else:
-                                blocks = []
-                                if not pass_ang:
-                                    blocks.append("patch_angle")
-                                if not pass_dist:
-                                    blocks.append("patch_distance")
-                                if not pass_centroid:
-                                    blocks.append("patch_centroid")
-                                reason = "blocked_by_" + "_and_".join(blocks) if blocks else "blocked_unknown"
-                            patch_merge_records.append({
-                                "seed_voxel_id": seed_id,
-                                "neighbor_voxel_id": j,
-                                "ang_diff": float(ang_diff),
-                                "dist_diff": float(dist_diff),
-                                "pass_patch_angle": int(1 if pass_ang else 0),
-                                "pass_patch_distance": int(1 if pass_dist else 0),
-                                # 新增(不破坏旧字段): 面内距离约束诊断
-                                "centroid_diff": float(centroid_diff),
-                                "pass_patch_centroid": int(1 if pass_centroid else 0),
-                                "patch_centroid_th": float(patch_centroid_th),
-                                "patch_angle": float(self.patch_angle),
-                                "patch_distance": float(self.patch_distance),
-                                "decision": reason,
-                            })
-                        except Exception:
-                            pass
-
-                    if pass_ang and pass_dist and pass_centroid:
+                    if ang_diff < self.patch_angle and dist_diff < self.patch_distance:
                         # 合并 patch j 至 seed
                         unmerged.discard(j)
                         merged_patch_ids.append(j)
@@ -1515,12 +962,11 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
 
                         # 将 j 的邻居加入待检查队列
                         for k in patch_neighbors[j]:
-                            if (k == seed_id) or (k in merged_patch_ids):
-                                continue
                             if k in unmerged and k not in neighbor_set:
                                 neighbor_set.add(k)
                                 neighbor_list.append(k)
                         neighbor_list = sorted(neighbor_list, key=lambda x: supervoxels[x]["error"])
+
                 # 生成最终平面 Discontinuity
                 # 收集合并的所有片段的点索引
                 all_points = set()
@@ -1586,17 +1032,18 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
         self.logger.info(f"Patch-based region growing complete: {len(discontinuities)} planes detected.")
 
         # Monitoring: plane size stats & final unassigned points
-        _MonLogPlaneSizesAndUnassigned(self.logger, discontinuities=discontinuities, remain_points=remain_points)
-        # -------------------------
-        # Debug export (Step5): Patch-based 区域生长阈值诊断表
-        # -------------------------
-        if debug_enabled:
-            _DebugExportStep5(
-                self,
-                debug_dir=debug_dir,
-                debug_base=debug_base,
-                patch_merge_records=patch_merge_records,
-            )
+        if len(discontinuities) > 0:
+            plane_sizes = np.array(
+                [len(d.segments[0].points) if (d.segments and hasattr(d.segments[0], "points")) else 0 for d in
+                 discontinuities], dtype=int)
+            if plane_sizes.size > 0:
+                self.logger.info(
+                    f"[MON] PlaneSizes: meanPts={plane_sizes.mean():.1f}, p50={np.percentile(plane_sizes, 50):.0f}, "
+                    f"p90={np.percentile(plane_sizes, 90):.0f}, minPts={plane_sizes.min()}, maxPts={plane_sizes.max()}"
+                )
+        remain_total = int(sum(len(s) for s in remain_points.values()))
+        remain_vox = int(sum(1 for s in remain_points.values() if len(s) > 0))
+        self.logger.info(f"[MON] UnassignedRemainEnd: points={remain_total}, voxels={remain_vox}")
         return discontinuities
 
     def _get_neighbor_voxels(self, voxel_id: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
@@ -2008,194 +1455,6 @@ class SupervoxelDetector(PlaneDetectionAlgorithm):
                     0,  # DistToPlane
                 ])
 
-    def _ExportDebugPointLevelCsvSubset(
-            self,
-            csv_path: str,
-            indices: np.ndarray,
-            coords: np.ndarray,
-            normals: np.ndarray,
-            rgb: np.ndarray,
-            curvature: np.ndarray
-    ) -> None:
-        """导出点级 CSV 的子集（用于 Step2 voxel 级绘图）。
-
-        - 字段与 _ExportDebugPointLevelCsv 保持一致；
-        - DR/DG/DB 默认填 0（不覆盖原始色，也不额外编码）。
-        """
-        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-
-        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
-        idx = idx[(idx >= 0) & (idx < coords.shape[0])]
-        if idx.size == 0:
-            return
-
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "X", "Y", "Z",
-                "nx", "ny", "nz",
-                "R", "G", "B",
-                "DR", "DG", "DB",
-                "Discontinuity_id",
-                "Cluster_id",
-                "Segment_id",
-                "A", "B", "C", "D",
-                "RMS",
-                "Curvature",
-                "DistToPlane",
-            ])
-
-            for i in idx.tolist():
-                x, y, z = coords[i]
-                nx, ny, nz = normals[i]
-                r_val, g_val, b_val = rgb[i]
-                curv = curvature[i] if (i < curvature.shape[0] and not np.isnan(curvature[i])) else 0.0
-
-                writer.writerow([
-                    float(x), float(y), float(z),
-                    float(nx), float(ny), float(nz),
-                    int(r_val), int(g_val), int(b_val),
-                    0, 0, 0,  # DR,DG,DB
-                    0, 0, 0,  # Discontinuity_id / Cluster_id / Segment_id
-                    0, 0, 0, 0,  # A,B,C,D
-                    0,  # RMS
-                    float(curv),
-                    0,  # DistToPlane
-                ])
-
-    def _ComputeVoxelDistributionStats(
-            self,
-            coords: np.ndarray,
-            normals: np.ndarray,
-            curvature: np.ndarray,
-            indices: List[int],
-            plane_normal: np.ndarray,
-            plane_d: float,
-            normals_valid: np.ndarray
-    ) -> Dict[str, float]:
-        """计算给定点集在一个 voxel 内的分布统计量（用于 Step2 诊断表）。
-
-        统计项（均以 float 输出，空集返回 NaN）:
-            1) normal_angle_deg_* : 点法向与 plane_normal 的夹角 (deg)，使用 |dot| 处理上下半球问题；
-            2) curvature_*        : 曲率；
-            3) dist_to_plane_*    : 点到平面的距离 |n·p + d|。
-
-        返回字段:
-            n_points, n_valid_normals, n_valid_curvature, n_valid_dist,
-            normal_angle_deg_mean/std/p50/p90,
-            curvature_mean/std/p50/p90,
-            dist_to_plane_mean/std/p50/p90
-        """
-        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
-        if idx.size == 0:
-            return {
-                "n_points": 0,
-                "n_valid_normals": 0,
-                "n_valid_curvature": 0,
-                "n_valid_dist": 0,
-                "normal_angle_deg_mean": float("nan"),
-                "normal_angle_deg_std": float("nan"),
-                "normal_angle_deg_p50": float("nan"),
-                "normal_angle_deg_p90": float("nan"),
-                "curvature_mean": float("nan"),
-                "curvature_std": float("nan"),
-                "curvature_p50": float("nan"),
-                "curvature_p90": float("nan"),
-                "dist_to_plane_mean": float("nan"),
-                "dist_to_plane_std": float("nan"),
-                "dist_to_plane_p50": float("nan"),
-                "dist_to_plane_p90": float("nan"),
-            }
-
-        idx = idx[(idx >= 0) & (idx < coords.shape[0])]
-        if idx.size == 0:
-            return {
-                "n_points": 0,
-                "n_valid_normals": 0,
-                "n_valid_curvature": 0,
-                "n_valid_dist": 0,
-                "normal_angle_deg_mean": float("nan"),
-                "normal_angle_deg_std": float("nan"),
-                "normal_angle_deg_p50": float("nan"),
-                "normal_angle_deg_p90": float("nan"),
-                "curvature_mean": float("nan"),
-                "curvature_std": float("nan"),
-                "curvature_p50": float("nan"),
-                "curvature_p90": float("nan"),
-                "dist_to_plane_mean": float("nan"),
-                "dist_to_plane_std": float("nan"),
-                "dist_to_plane_p50": float("nan"),
-                "dist_to_plane_p90": float("nan"),
-            }
-
-        n_points = int(idx.size)
-
-        # dist to plane
-        pts = coords[idx]
-        dist = np.abs(pts.dot(plane_normal) + float(plane_d))
-        dist = dist[np.isfinite(dist)]
-        n_valid_dist = int(dist.size)
-
-        # normals angle
-        n_valid_normals = 0
-        ang = np.array([], dtype=float)
-        try:
-            valid_n_mask = normals_valid[idx]
-            if np.any(valid_n_mask):
-                nn = normals[idx[valid_n_mask]]
-                # 单位化 plane_normal
-                pn = plane_normal.astype(float).reshape(3)
-                pn_norm = float(np.linalg.norm(pn)) + 1e-12
-                pn = pn / pn_norm
-                # 单位化 nn
-                nn_norm = np.linalg.norm(nn, axis=1)
-                m = nn_norm > 1e-12
-                nn = nn[m] / nn_norm[m][:, None]
-                if nn.shape[0] > 0:
-                    n_valid_normals = int(nn.shape[0])
-                    cosv = np.clip(np.abs(nn.dot(pn)), 0.0, 1.0)
-                    ang = np.degrees(np.arccos(cosv))
-        except Exception:
-            ang = np.array([], dtype=float)
-            n_valid_normals = 0
-
-        # curvature
-        curv = np.array([], dtype=float)
-        try:
-            curv = curvature[idx]
-            curv = curv[np.isfinite(curv)]
-        except Exception:
-            curv = np.array([], dtype=float)
-        n_valid_curv = int(curv.size)
-
-        def _stat(x: np.ndarray) -> Tuple[float, float, float, float]:
-            if x.size == 0:
-                return float("nan"), float("nan"), float("nan"), float("nan")
-            return float(np.mean(x)), float(np.std(x)), float(np.percentile(x, 50)), float(np.percentile(x, 90))
-
-        ang_mean, ang_std, ang_p50, ang_p90 = _stat(ang)
-        curv_mean, curv_std, curv_p50, curv_p90 = _stat(curv)
-        dist_mean, dist_std, dist_p50, dist_p90 = _stat(dist)
-
-        return {
-            "n_points": float(n_points),
-            "n_valid_normals": float(n_valid_normals),
-            "n_valid_curvature": float(n_valid_curv),
-            "n_valid_dist": float(n_valid_dist),
-            "normal_angle_deg_mean": ang_mean,
-            "normal_angle_deg_std": ang_std,
-            "normal_angle_deg_p50": ang_p50,
-            "normal_angle_deg_p90": ang_p90,
-            "curvature_mean": curv_mean,
-            "curvature_std": curv_std,
-            "curvature_p50": curv_p50,
-            "curvature_p90": curv_p90,
-            "dist_to_plane_mean": dist_mean,
-            "dist_to_plane_std": dist_std,
-            "dist_to_plane_p50": dist_p50,
-            "dist_to_plane_p90": dist_p90,
-        }
-
     def _ExportDebugRecordsCsv(self, csv_path: str, fieldnames: List[str], records: List[Dict]) -> None:
         if not records:
             return
@@ -2251,15 +1510,7 @@ def GenerateDebugColorFromId(idx: int):
     s = 0.65
     v = 0.95
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
-    rr, gg, bb = int(r * 255), int(g * 255), int(b * 255)
-
-    # 显式规避纯红/纯绿/纯蓝（便于与“结构色”编码区分）
-    if (rr, gg, bb) in [(255, 0, 0), (0, 255, 0), (0, 0, 255)]:
-        rr = max(0, rr - 10)
-        gg = max(0, gg - 10)
-        bb = max(0, bb - 10)
-
-    return rr, gg, bb
+    return int(r * 255), int(g * 255), int(b * 255)
 
 
 if __name__ == "__main__":

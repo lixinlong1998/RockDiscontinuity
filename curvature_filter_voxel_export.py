@@ -186,7 +186,9 @@ class CsvCurvatureVoxelExporter:
                 # 2. 创建可视化器实例
                 viz = ResultsVisualizer(paths_list=paths_list)
                 # 3. 输出单一结果图件
-                viz.ExportAllSingleAnalysis(plots_name=["points_stereonet_kde"], output_formats=("png",), show=False)
+                viz.ExportAllSingleAnalysis(plots_name=["dipdir_rose", "points_stereonet_kde"],
+                                            output_formats=("png",),
+                                            show=False)
         self.logger.info(f"完成输出: {out_dir}")
 
         return out_dir
